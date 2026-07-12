@@ -3,3 +3,4 @@
 !.claude/settings.json
 *.dump
 .direnv
+.venv

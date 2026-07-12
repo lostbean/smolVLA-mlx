@@ -1,0 +1,22 @@
+[project]
+name = "smolvla-mlx"
+version = "0.1.0"
+description = "SmolVLA on Apple Silicon via MLX, driven from an Elixir/BEAM control loop."
+requires-python = ">=3.13"
+dependencies = [
+    "mlx-vlm",
+]
+
+[tool.uv.workspace]
+members = [
+    "vendor/mlx-vlm",
+]
+
+[tool.uv.sources]
+mlx-vlm = { workspace = true, editable = true }
+
+[dependency-groups]
+dev = [
+    "psutil>=7.2.2",
+    "pytest>=9.1.1",
+]
