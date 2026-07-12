@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+# design-schema-version: 3
+#
+# gate-stamp-check — stamp-freshness gate for a TARGET repo's copy-installed
+# check scripts (schema scripts_contract.distribution). Two comparisons,
+# fail closed:
+#
+#   (a) every copy-installed check script in <target>/scripts/ (design-render,
+#       layer-integrity, gate-stamp-check) carries a bare
+#       'design-schema-version: <N>' substring (grep the substring, never the
+#       comment leader) whose <N> equals the framework schema's "version";
+#   (b) the target's scripts/design-render carries a
+#       'design-render-build: <hash>' equal to the framework bundle's —
+#       behavior can change under an unchanged schema version.
+#
+# A missing script or a missing stamp line is a violation, never a skip.
+# Staleness warns rather than blocks by policy — the CALLER (sync,
+# setup-project-skills) decides; this script only reports and exits.
+#
+# Usage: gate-stamp-check <target-repo> [framework-root]
+#   framework-root defaults to this script's own repo (<script-dir>/..);
+#   pass it explicitly when running a copy-installed instance of this script.
+#
+# Self-contained mode: when NO framework-root argument is given and the
+# default (<script-dir>/..) carries no schema/design-schema.json — the
+# copy-installed layout with no framework checkout in reach — there is
+# nothing to be stale AGAINST. That is not an error: an explicit notice and
+# exit 0. An explicit framework-root that does not resolve stays exit 2.
+#
+# Exit 0: all stamps current (one OK line), or self-contained mode (notice).
+# Exit 1: at least one violation (one report line per file). Exit 2: usage/IO
+# error (bad args, unreadable framework schema or bundle).
+set -euo pipefail
+
+usage() {
+  echo "usage: $(basename "$0") <target-repo> [framework-root]" >&2
+}
+
+if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+  usage
+  exit 2
+fi
+
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "error: python3 is required (used for schema parsing)" >&2
+  exit 2
+fi
+
+TARGET_ARG="$1"
+if [ ! -d "$TARGET_ARG" ]; then
+  echo "error: target repo not found: $TARGET_ARG" >&2
+  exit 2
+fi
+TARGET="$(cd "$TARGET_ARG" && pwd -P)"
+
+EXPLICIT_FRAMEWORK=0
+if [ "$#" -eq 2 ]; then
+  FRAMEWORK_ARG="$2"
+  EXPLICIT_FRAMEWORK=1
+else
+  SELF="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$0")"
+  FRAMEWORK_ARG="$(dirname "$SELF")/.."
+fi
+# Self-contained mode (see header): the default framework root is not a
+# framework checkout, and no explicit root was passed — skip, do not fail.
+if [ "$EXPLICIT_FRAMEWORK" -eq 0 ] &&
+  { [ ! -d "$FRAMEWORK_ARG" ] || [ ! -f "$FRAMEWORK_ARG/schema/design-schema.json" ]; }; then
+  echo "gate-stamp-check: framework not reachable (no schema/design-schema.json under $FRAMEWORK_ARG); stamp check skipped (self-contained mode)"
+  exit 0
+fi
+if [ ! -d "$FRAMEWORK_ARG" ]; then
+  echo "error: framework root not found: $FRAMEWORK_ARG" >&2
+  exit 2
+fi
+FRAMEWORK="$(cd "$FRAMEWORK_ARG" && pwd -P)"
+
+# --- Framework truth: schema version + bundle build hash ---------------------
+
+FW_SCHEMA="$FRAMEWORK/schema/design-schema.json"
+if [ ! -f "$FW_SCHEMA" ]; then
+  echo "error: framework schema not found: $FW_SCHEMA" >&2
+  exit 2
+fi
+if ! FW_VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$FW_SCHEMA")"; then
+  echo "error: cannot read \"version\" from framework schema: $FW_SCHEMA" >&2
+  exit 2
+fi
+
+# stamp_of <file> <label> — first bare '<label>: <value>' substring's value;
+# empty when the file carries no stamp (grep's miss must not trip pipefail).
+stamp_of() {
+  { grep -oE "$2: [A-Za-z0-9]+" "$1" 2>/dev/null || true; } | head -1 | sed "s/^$2: //"
+}
+
+FW_BUNDLE="$FRAMEWORK/scripts/design-render"
+if [ ! -f "$FW_BUNDLE" ]; then
+  echo "error: framework bundle not found: $FW_BUNDLE" >&2
+  exit 2
+fi
+FW_BUILD="$(stamp_of "$FW_BUNDLE" design-render-build)"
+if [ -z "$FW_BUILD" ]; then
+  echo "error: framework bundle carries no design-render-build stamp: $FW_BUNDLE" >&2
+  exit 2
+fi
+
+# --- Target comparison, fail closed ------------------------------------------
+
+CHECK_SCRIPTS=(design-render layer-integrity gate-stamp-check)
+
+found=0
+violation() { # <file> <why>
+  printf 'violation: %s: %s\n' "$1" "$2"
+  found=1
+}
+
+for name in "${CHECK_SCRIPTS[@]}"; do
+  f="$TARGET/scripts/$name"
+  if [ ! -f "$f" ]; then
+    violation "scripts/$name" "missing copy-installed check script (re-run setup-project-skills)"
+    continue
+  fi
+  got="$(stamp_of "$f" design-schema-version)"
+  if [ -z "$got" ]; then
+    violation "scripts/$name" "no design-schema-version stamp line"
+  elif [ "$got" != "$FW_VERSION" ]; then
+    violation "scripts/$name" "stale design-schema-version stamp: $got (framework schema is $FW_VERSION)"
+  fi
+done
+
+if [ -f "$TARGET/scripts/design-render" ]; then
+  got_build="$(stamp_of "$TARGET/scripts/design-render" design-render-build)"
+  if [ -z "$got_build" ]; then
+    violation "scripts/design-render" "no design-render-build stamp line"
+  elif [ "$got_build" != "$FW_BUILD" ]; then
+    violation "scripts/design-render" "stale design-render-build stamp: $got_build (framework bundle is $FW_BUILD)"
+  fi
+fi
+
+# --- Verdict -------------------------------------------------------------------
+
+if [ "$found" -ne 0 ]; then
+  exit 1
+fi
+echo "gate-stamp-check OK: schema v$FW_VERSION, build $FW_BUILD — all installed stamps current in $TARGET"
+exit 0

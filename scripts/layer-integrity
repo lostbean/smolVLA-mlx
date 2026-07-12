@@ -1,0 +1,838 @@
+#!/usr/bin/env bash
+# design-schema-version: 3
+#
+# layer-integrity — cross-artifact link checker for a TARGET repo's design
+# layer (design docs + CONTEXT + ADRs). Checks mechanical well-formedness:
+#
+#   1. Link resolution, fail-closed — in every design.md and CONTEXT-MAP.md,
+#      every design-ish markdown link (per the schema's design_ish_markers)
+#      must resolve: file exists AND the anchor exists (term: a heading
+#      matching the schema heading_regex; adr: a line matching the schema
+#      element_regex). A near-miss (#term- with no slug, a #trem- typo, a
+#      malformed adr id) is a violation, never a skip.
+#   2. ADR lockstep — every file in the ADR dir matches the schema filename
+#      pattern and contains exactly one anchor element whose NNNN equals the
+#      filename's NNNN.
+#   3. Term anchor validity — every {#...} heading anchor in every CONTEXT.md
+#      matches the schema term id pattern; duplicates within one file are
+#      violations.
+#   4. Map totality (multi-context) — with 2+ CONTEXT.md files, CONTEXT-MAP.md
+#      exists and links every CONTEXT.md by exact relative path, and every
+#      non-root design.md is linked from the root design doc.
+#   5. No orphan design.html — every design.html sits next to a design.md.
+#      (Freshness is design-render's job, not this script's.)
+#   6. No verbatim-duplicate non-trivial lines within one design.md or
+#      CONTEXT.md — the mechanical shadow of "cross-links, never restatement".
+#      Trivial lines (blank, fences, rules, table separators, pure markup,
+#      <24 chars), citation-only lines (all links), and fenced code blocks
+#      are exempt.
+#   7. No generation debris — a generation-wrapper artifact line (per the
+#      schema's generation_debris_patterns, e.g. a literal '</content>') in
+#      any layer artifact (design.md, CONTEXT.md, CONTEXT-MAP.md, COVERAGE.md,
+#      ADRs) is writer leakage, never content. Fenced code blocks are exempt
+#      (an example is documentation).
+#   8. Layer homing — every layer basename (design.md, design.html, CONTEXT.md,
+#      CONTEXT-MAP.md, COVERAGE.md) sits at a home declared by the schema's
+#      layer_layout.homing: the layer lives entirely under docs/, never
+#      colocated into source directories. A layer file outside its home is a
+#      mishomed stray. (ADR homing is check 2's concern via the ADR dir.)
+#
+# Plus one ADVISORY (never a check; exit codes untouched): when the repo has
+# moved schema-threshold+ commits since any layer artifact last changed, one
+# line recommends reconciling before relying on the layer
+# (schema layer_layout.staleness_advisory; tolerate-absent for older copies).
+#
+# Usage: layer-integrity [repo-root]     (default: .)
+#
+# Discovery prunes dot-dirs, node_modules, and — when the root is a git
+# repo — gitignored paths (a gitignored tree is not part of the system).
+# Non-git roots are scanned in full.
+#
+# The schema is located via $DESIGN_SCHEMA if set, else the script-sibling
+# design-schema.json (the copy-installed layout per the schema's
+# scripts_contract.distribution), else schema/design-schema.json relative to
+# this script's own realpath's repo (the framework layout); exit 2 when none
+# resolves.
+# Anchor patterns (term id + heading regex, adr id + filename + element regex)
+# and the design-ish link markers all come from the schema — never hardcoded.
+# Schema regexes are matched with python re (their flavor uses \s, which BSD
+# grep's ERE does not support).
+#
+# Exit 0: clean. Exit 1: at least one violation (one report line each: file,
+# what, why). Exit 2: usage/IO error — including "no design layer" when the
+# target repo has no design artifacts at all (sync branches on that message).
+
+set -euo pipefail
+
+usage() {
+  echo "usage: $(basename "$0") [repo-root]" >&2
+}
+
+if [ "$#" -gt 1 ]; then
+  usage
+  exit 2
+fi
+
+REPO_ARG="${1:-.}"
+if [ ! -d "$REPO_ARG" ]; then
+  echo "error: repo root not found: $REPO_ARG" >&2
+  exit 2
+fi
+REPO="$(cd "$REPO_ARG" && pwd -P)"
+
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "error: python3 is required (used for schema parsing and path resolution)" >&2
+  exit 2
+fi
+
+# --- Schema: locate and load contracts --------------------------------------
+# Lookup chain: $DESIGN_SCHEMA -> script-sibling design-schema.json (the
+# copy-installed layout) -> ../schema/design-schema.json (framework layout).
+if [ -n "${DESIGN_SCHEMA:-}" ]; then
+  SCHEMA="$DESIGN_SCHEMA"
+else
+  SELF="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$0")"
+  SELF_DIR="$(dirname "$SELF")"
+  if [ -f "$SELF_DIR/design-schema.json" ]; then
+    SCHEMA="$SELF_DIR/design-schema.json"
+  else
+    SCHEMA="$SELF_DIR/../schema/design-schema.json"
+  fi
+fi
+if [ ! -f "$SCHEMA" ]; then
+  echo "error: design schema not found: $SCHEMA (set DESIGN_SCHEMA to the framework's schema/design-schema.json)" >&2
+  exit 2
+fi
+
+# schema_get <key> [<key> ...] — walk nested keys in the schema JSON.
+schema_get() {
+  python3 -c 'import json,sys,functools; print(functools.reduce(lambda d,k: d[k], sys.argv[2:], json.load(open(sys.argv[1]))))' "$SCHEMA" "$@"
+}
+
+# entry_point_matching <suffix> — the layer entry point ending in <suffix>.
+entry_point_matching() {
+  python3 -c 'import json,sys; print([p for p in json.load(open(sys.argv[1]))["layer_layout"]["entry_points"] if p.endswith(sys.argv[2])][0])' "$SCHEMA" "$1"
+}
+
+if ! TERM_ID_RE="$(schema_get anchors term id_pattern)" ||
+  ! TERM_HEADING_RE="$(schema_get anchors term heading_regex)" ||
+  ! ADR_ID_RE="$(schema_get anchors adr id_pattern)" ||
+  ! ADR_FILE_RE="$(schema_get anchors adr filename_pattern)" ||
+  ! ADR_ELEMENT_RE="$(schema_get anchors adr element_regex)" ||
+  ! ADR_DIR_REL="$(schema_get layer_layout adr_dir)" ||
+  ! ROOT_DESIGN_REL="$(entry_point_matching design.md)" ||
+  ! MAP_REL="$(entry_point_matching CONTEXT-MAP.md)"; then
+  echo "error: cannot read layer contracts from schema: $SCHEMA (requires anchors.term.{id_pattern,heading_regex}, anchors.adr.{id_pattern,filename_pattern,element_regex}, layer_layout.{adr_dir,entry_points})" >&2
+  exit 2
+fi
+
+# Design-ish link classification markers — declared by the schema, never
+# hardcoded here. A marker starting with "re:" is a regex matched against the
+# whole destination; a marker ending in "/" is a directory (matched against
+# the link's resolved target path); a marker containing "#" is matched as a
+# substring of the whole destination; anything else matches the target's
+# basename exactly.
+DESIGNISH_MARKERS=()
+while IFS= read -r m; do DESIGNISH_MARKERS+=("$m"); done < <(
+  python3 -c 'import json,sys; [print(m) for m in json.load(open(sys.argv[1]))["layer_layout"]["design_ish_markers"]]' "$SCHEMA" 2>/dev/null
+)
+if [ "${#DESIGNISH_MARKERS[@]}" -eq 0 ]; then
+  echo "error: cannot read layer contracts from schema: $SCHEMA (requires a non-empty layer_layout.design_ish_markers)" >&2
+  exit 2
+fi
+
+# Generation-wrapper line patterns (python-re, matched per line) — declared by
+# the schema (layer_layout.generation_debris_patterns), never hardcoded here.
+DEBRIS_PATTERNS=()
+while IFS= read -r m; do DEBRIS_PATTERNS+=("$m"); done < <(
+  python3 -c 'import json,sys; [print(m) for m in json.load(open(sys.argv[1]))["layer_layout"]["generation_debris_patterns"]]' "$SCHEMA" 2>/dev/null
+)
+if [ "${#DEBRIS_PATTERNS[@]}" -eq 0 ]; then
+  echo "error: cannot read layer contracts from schema: $SCHEMA (requires a non-empty layer_layout.generation_debris_patterns)" >&2
+  exit 2
+fi
+
+# Layer homing contract — required, checked up front so a pre-homing schema
+# copy fails loudly (exit 2) instead of silently skipping check 8.
+if ! schema_get layer_layout homing homes >/dev/null 2>&1 ||
+  ! CONTEXT_SEGMENT_RE="$(schema_get layer_layout homing context_segment)"; then
+  echo "error: cannot read layer contracts from schema: $SCHEMA (requires layer_layout.homing.{homes,context_segment})" >&2
+  exit 2
+fi
+
+ROOT_DESIGN="$REPO/$ROOT_DESIGN_REL"
+MAP="$REPO/$MAP_REL"
+ADR_DIR="$REPO/$ADR_DIR_REL"
+
+# --- Helpers -----------------------------------------------------------------
+
+found=0
+violation() { # <file> <what> <why>
+  printf 'violation: %s: %s: %s\n' "$1" "$2" "$3"
+  found=1
+}
+
+# matches <string> <regex> — test a string against a schema regex. Schema
+# regexes are python-re flavored (\s etc.), so python is the matching engine.
+matches() {
+  python3 -c 'import re,sys; sys.exit(0 if re.search(sys.argv[2], sys.argv[1]) else 1)' "$1" "$2"
+}
+
+# count_lines_matching <regex> <must-contain> — count stdin lines that match
+# the schema regex AND contain the literal substring.
+count_lines_matching() {
+  python3 -c 'import re,sys; pat=re.compile(sys.argv[1]); print(sum(1 for l in sys.stdin.read().splitlines() if pat.search(l) and sys.argv[2] in l))' "$1" "$2"
+}
+
+# lines_matching <regex> — print the stdin lines that match the schema regex.
+lines_matching() {
+  python3 -c 'import re,sys; pat=re.compile(sys.argv[1]); print("\n".join(l for l in sys.stdin.read().splitlines() if pat.search(l)))' "$1"
+}
+
+# extract_by_pattern <anchored-regex> — print the first substring of stdin
+# matching the de-anchored pattern; exit 1 when there is none.
+extract_by_pattern() {
+  python3 -c 'import re,sys; m=re.search(sys.argv[1].lstrip("^").rstrip("$"), sys.stdin.read()); print(m.group(0)) if m else sys.exit(1)' "$1"
+}
+
+# strip_fences <file> — file content with fenced code blocks removed, so an
+# example link or anchor inside a code fence never counts.
+strip_fences() {
+  awk '/^[[:space:]]*(```|~~~)/ { f = !f; next } !f' "$1"
+}
+
+# extract_links <file> — every inline markdown link destination, one per line.
+extract_links() {
+  strip_fences "$1" | grep -oE '\]\([^)]*\)' | sed -E 's/^\]\(//; s/\)$//' || true
+}
+
+# extract_click_targets <file> — every mermaid `click <node> "<dest>"` target,
+# one per line. Diagram navigation targets are design-ish links too: a click on
+# a node pointing at a design.md must resolve like any inline link. They live
+# inside fenced ```mermaid blocks, which strip_fences (and thus extract_links)
+# drops — so they are collected here and fed through the same resolution.
+extract_click_targets() {
+  # In a mermaid click line — `click NODE "target" "optional tooltip"` — the
+  # first quoted string is the navigation destination; a bare `click NODE href`
+  # form uses the first whitespace token after the node. Emit that destination.
+  awk '
+    /^[[:space:]]*(```|~~~)[[:space:]]*mermaid/ { m = 1; next }
+    /^[[:space:]]*(```|~~~)/ { m = 0; next }
+    m && /^[[:space:]]*click[[:space:]]/ {
+      if (match($0, /"[^"]*"/)) {
+        d = substr($0, RSTART + 1, RLENGTH - 2)
+      } else {
+        d = $3
+      }
+      if (d != "") print d
+    }
+  ' "$1" || true
+}
+
+# resolve_lexical <base-dir> <relpath> — lexically-normalized absolute path.
+resolve_lexical() {
+  python3 -c 'import os,sys; print(os.path.normpath(os.path.join(sys.argv[1], sys.argv[2])))' "$1" "$2"
+}
+
+rel_of() {
+  printf '%s\n' "${1#"$REPO"/}"
+}
+
+# clean_dest <raw-dest> — strip <>-wrapping, a trailing "title", whitespace.
+clean_dest() {
+  local d="$1"
+  d="${d#"${d%%[![:space:]]*}"}"
+  d="${d%"${d##*[![:space:]]}"}"
+  d="${d#<}"
+  d="${d%>}"
+  if [[ $d == *' "'* ]]; then
+    d="${d%% \"*}"
+  fi
+  printf '%s\n' "$d"
+}
+
+# --- Layer discovery ---------------------------------------------------------
+
+# The framework assumes every system under design lives in a git repo. When
+# the target root is one, gitignored paths are not part of the system and are
+# pruned from discovery (scratch trees, generated output). A non-git root
+# behaves as before: no pruning.
+IS_GIT_REPO=0
+if git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1; then
+  IS_GIT_REPO=1
+fi
+
+# prune_ignored — stdin: paths, one per line; stdout: those NOT gitignored.
+# One batch `git check-ignore --stdin` per call (exit 1 = nothing ignored).
+prune_ignored() {
+  local all ignored line
+  all="$(cat)"
+  if [ -z "$all" ]; then
+    return 0
+  fi
+  if [ "$IS_GIT_REPO" -eq 0 ]; then
+    printf '%s\n' "$all"
+    return 0
+  fi
+  ignored="$(printf '%s\n' "$all" | git -C "$REPO" check-ignore --stdin 2>/dev/null || true)"
+  if [ -z "$ignored" ]; then
+    printf '%s\n' "$all"
+    return 0
+  fi
+  declare -A ig=()
+  while IFS= read -r line; do ig["$line"]=1; done <<<"$ignored"
+  while IFS= read -r line; do
+    if [ -z "${ig[$line]+x}" ]; then
+      printf '%s\n' "$line"
+    fi
+  done <<<"$all"
+}
+
+# is_ignored <path> — true when the target is a git repo and <path> is ignored.
+is_ignored() {
+  [ "$IS_GIT_REPO" -eq 1 ] && git -C "$REPO" check-ignore -q "$1" 2>/dev/null
+}
+
+# find_layer_files <name> — every <name> in the repo; dot-dirs, node_modules
+# and gitignored paths pruned, sorted.
+find_layer_files() {
+  find "$REPO" -mindepth 1 \( -name '.*' -o -name node_modules \) -prune -o -type f -name "$1" -print 2>/dev/null | prune_ignored | sort
+}
+
+design_docs=()
+while IFS= read -r f; do design_docs+=("$f"); done < <(find_layer_files design.md)
+
+contexts=()
+while IFS= read -r f; do contexts+=("$f"); done < <(find_layer_files CONTEXT.md)
+
+design_htmls=()
+while IFS= read -r f; do design_htmls+=("$f"); done < <(find_layer_files design.html)
+
+domain_design=()
+ROOT_DESIGN_PRESENT=0
+for f in ${design_docs[@]+"${design_docs[@]}"}; do
+  if [ "$f" = "$ROOT_DESIGN" ]; then
+    ROOT_DESIGN_PRESENT=1
+  else
+    domain_design+=("$f")
+  fi
+done
+
+MAP_PRESENT=0
+if [ -f "$MAP" ] && ! is_ignored "$MAP"; then
+  MAP_PRESENT=1
+fi
+
+ADR_DIR_PRESENT=0
+if [ -d "$ADR_DIR" ] && ! is_ignored "$ADR_DIR"; then
+  ADR_DIR_PRESENT=1
+fi
+
+adr_files=()
+if [ "$ADR_DIR_PRESENT" -eq 1 ]; then
+  while IFS= read -r f; do adr_files+=("$f"); done < <(
+    find "$ADR_DIR" -mindepth 1 -maxdepth 1 -type f ! -name '.*' -print | prune_ignored | sort
+  )
+fi
+
+if [ "${#design_docs[@]}" -eq 0 ] && [ "${#contexts[@]}" -eq 0 ] &&
+  [ "${#design_htmls[@]}" -eq 0 ] && [ "$MAP_PRESENT" -eq 0 ] && [ "$ADR_DIR_PRESENT" -eq 0 ]; then
+  echo "error: no design layer in $REPO (no design.md, CONTEXT.md, $MAP_REL, $ADR_DIR_REL/, or design.html)" >&2
+  exit 2
+fi
+
+# --- Check 1: link resolution, fail-closed -----------------------------------
+#
+# A link is design-ish when it matches any schema design_ish_marker (e.g.
+# CONTEXT.md / design.md / design.html by basename, #term- / .md#adr- by
+# substring, the ADR dir by resolved path). External URLs, pure # fragments,
+# and non-design-ish relative links are ignored. For a design-ish link the
+# file must exist AND any fragment must be a valid, present term or adr
+# anchor — anything else (missing slug, #trem- typo, malformed adr id) is a
+# violation, never a skip.
+
+check_links() { # <source file>
+  local src="$1" rel src_dir dest filepart frag base abs designish designish_re in_marker_dir m kind hits
+  rel="$(rel_of "$src")"
+  src_dir="$(dirname "$src")"
+  while IFS= read -r dest; do
+    dest="$(clean_dest "$dest")"
+    case "$dest" in
+    '' | '#'* | http://* | https://* | mailto:*) continue ;;
+    esac
+    filepart="${dest%%#*}"
+    frag=""
+    case "$dest" in
+    *'#'*) frag="${dest#*#}" ;;
+    esac
+    if [ -z "$filepart" ]; then
+      continue # pure fragment
+    fi
+    base="${filepart##*/}"
+
+    designish=0
+    designish_re=0
+    for m in "${DESIGNISH_MARKERS[@]}"; do
+      case "$m" in
+      re:*)
+        if matches "$dest" "${m#re:}"; then
+          designish_re=1
+        fi
+        ;;
+      */) ;; # directory marker — needs the resolved path, tested below
+      *'#'*)
+        case "$dest" in
+        *"$m"*) designish=1 ;;
+        esac
+        ;;
+      *)
+        if [ "$base" = "$m" ]; then
+          designish=1
+        fi
+        ;;
+      esac
+    done
+
+    case "$filepart" in
+    /*) abs="$(resolve_lexical "$REPO" "${filepart#/}")" ;;
+    *) abs="$(resolve_lexical "$src_dir" "$filepart")" ;;
+    esac
+    in_marker_dir=0
+    for m in "${DESIGNISH_MARKERS[@]}"; do
+      case "$m" in
+      re:*) ;;
+      */)
+        case "$abs" in
+        "$REPO/${m%/}"/*) in_marker_dir=1 ;; # points into the marker dir
+        esac
+        ;;
+      esac
+    done
+    if [ "$designish" -eq 0 ] && [ "$designish_re" -eq 0 ] && [ "$in_marker_dir" -eq 0 ]; then
+      continue # matches no schema marker — not design-ish
+    fi
+
+    if [ -z "$frag" ]; then
+      if [ ! -e "$abs" ]; then
+        violation "$rel" "dangling link" "target not found: $dest"
+      elif [ "$designish_re" -eq 1 ] && [ "$designish" -eq 0 ] && [ "$in_marker_dir" -eq 0 ]; then
+        # Classified adr-ish by filename shape alone, yet the target lives
+        # outside every schema directory marker: a stray adr-ish file, not a
+        # canonical ADR. (Inside the ADR dir, check 2 owns lockstep.)
+        violation "$rel" "stray adr-ish file" "$dest matches an adr-ish schema marker but resolves outside $ADR_DIR_REL/"
+      fi
+      continue
+    fi
+    if [ ! -f "$abs" ]; then
+      violation "$rel" "dangling link" "target file not found: $dest"
+      continue
+    fi
+
+    if matches "$frag" "$TERM_ID_RE"; then
+      kind="term"
+    elif matches "$frag" "$ADR_ID_RE"; then
+      kind="adr"
+    else
+      violation "$rel" "malformed anchor" "design-ish fragment '#$frag' in $dest matches neither the term nor the adr id pattern"
+      continue
+    fi
+    case "$abs" in
+    *.html)
+      if ! grep -qF "id=\"$frag\"" "$abs"; then
+        violation "$rel" "dangling $kind anchor" "no id \"$frag\" in $filepart"
+      fi
+      ;;
+    *)
+      if [ "$kind" = "term" ]; then
+        hits="$(strip_fences "$abs" | count_lines_matching "$TERM_HEADING_RE" "{#$frag}")"
+        if [ "${hits:-0}" -eq 0 ]; then
+          violation "$rel" "dangling term anchor" "no heading {#$frag} in $filepart"
+        fi
+      else
+        hits="$(strip_fences "$abs" | count_lines_matching "$ADR_ELEMENT_RE" "$frag")"
+        if [ "${hits:-0}" -eq 0 ]; then
+          violation "$rel" "dangling adr anchor" "no <a id=\"$frag\"></a> in $filepart"
+        fi
+      fi
+      ;;
+    esac
+  done < <(
+    extract_links "$src"
+    extract_click_targets "$src"
+  )
+}
+
+for src in ${design_docs[@]+"${design_docs[@]}"}; do
+  check_links "$src"
+done
+if [ "$MAP_PRESENT" -eq 1 ]; then
+  check_links "$MAP"
+fi
+
+# --- Check 2: ADR lockstep -----------------------------------------------------
+
+check_adrs() {
+  local f base relf fname_ok elements ecount loose id nnnn_file nnnn_anchor
+  for f in ${adr_files[@]+"${adr_files[@]}"}; do
+    base="${f##*/}"
+    relf="$(rel_of "$f")"
+    fname_ok=1
+    if ! matches "$base" "$ADR_FILE_RE"; then
+      violation "$relf" "bad adr filename" "does not match schema filename pattern $ADR_FILE_RE"
+      fname_ok=0
+    fi
+    # Anchor elements are exactly the lines matching the schema element regex.
+    # Anchor-ish lines that do NOT match it are near-misses — fail closed.
+    elements="$(strip_fences "$f" | lines_matching "$ADR_ELEMENT_RE" || true)"
+    if [ -z "$elements" ]; then
+      ecount=0
+    else
+      ecount="$(printf '%s\n' "$elements" | wc -l | tr -d '[:space:]')"
+    fi
+    loose="$(strip_fences "$f" | grep -cE '<a[^>]*id=' || true)"
+    if [ "${loose:-0}" -gt "$ecount" ]; then
+      violation "$relf" "malformed adr anchor" "$((loose - ecount)) anchor-ish line(s) do not match the schema element regex $ADR_ELEMENT_RE"
+      continue
+    fi
+    if [ "$ecount" -eq 0 ]; then
+      violation "$relf" "missing adr anchor" "no anchor element matching the schema element regex $ADR_ELEMENT_RE"
+      continue
+    fi
+    if [ "$ecount" -ne 1 ]; then
+      violation "$relf" "multiple adr anchors" "expected exactly one anchor element, found $ecount"
+      continue
+    fi
+    if ! id="$(printf '%s' "$elements" | extract_by_pattern "$ADR_ID_RE")"; then
+      violation "$relf" "malformed adr anchor" "cannot extract an id matching $ADR_ID_RE from anchor element: $elements"
+      continue
+    fi
+    if [ "$fname_ok" -eq 1 ]; then
+      nnnn_file="${base%%-*}"
+      nnnn_anchor="${id#adr-}"
+      if [ "$nnnn_file" != "$nnnn_anchor" ]; then
+        violation "$relf" "adr lockstep mismatch" "filename NNNN '$nnnn_file' != anchor NNNN '$nnnn_anchor'"
+      fi
+    fi
+  done
+}
+check_adrs
+
+# --- Check 3: term anchor validity in CONTEXT.md -------------------------------
+
+check_terms() {
+  local ctx relc raw id
+  for ctx in ${contexts[@]+"${contexts[@]}"}; do
+    relc="$(rel_of "$ctx")"
+    declare -A seen=()
+    while IFS= read -r raw; do
+      if [ -z "$raw" ]; then
+        continue
+      fi
+      id="${raw#"{#"}"
+      id="${id%\}}"
+      if [ -z "$id" ]; then
+        violation "$relc" "invalid term anchor" "{#} has no id at all"
+        continue
+      fi
+      if ! matches "$id" "$TERM_ID_RE"; then
+        violation "$relc" "invalid term anchor" "{#$id} does not match schema term id pattern $TERM_ID_RE"
+      fi
+      if [ -n "${seen[$id]+x}" ]; then
+        violation "$relc" "duplicate term id" "{#$id} declared more than once"
+      else
+        seen[$id]=1
+      fi
+    done < <(strip_fences "$ctx" | grep -E '^#{1,6}[[:space:]]' | grep -oE '\{#[^}]*\}' || true)
+    unset seen
+  done
+}
+check_terms
+
+# --- Check 4: map totality (multi-context) -------------------------------------
+
+check_map_totality() {
+  local n dest abs ctx d rd_dir
+  n="${#contexts[@]}"
+  if [ "$n" -lt 2 ]; then
+    return 0 # single-context: CONTEXT-MAP.md is not required
+  fi
+
+  if [ "$MAP_PRESENT" -eq 0 ]; then
+    violation "$MAP_REL" "missing context map" "$n CONTEXT.md files exist but $MAP_REL is absent at its declared home"
+  else
+    declare -A map_refs=()
+    local map_dir
+    map_dir="$(dirname "$MAP")"
+    while IFS= read -r dest; do
+      dest="$(clean_dest "$dest")"
+      case "$dest" in
+      '' | '#'* | http://* | https://* | mailto:*) continue ;;
+      esac
+      dest="${dest%%#*}"
+      if [ -z "$dest" ]; then
+        continue
+      fi
+      case "${dest##*/}" in
+      CONTEXT.md) ;;
+      *) continue ;;
+      esac
+      case "$dest" in
+      /*) abs="$(resolve_lexical "$REPO" "${dest#/}")" ;;
+      *) abs="$(resolve_lexical "$map_dir" "$dest")" ;;
+      esac
+      map_refs["$abs"]=1
+    done < <(extract_links "$MAP")
+    for ctx in "${contexts[@]}"; do
+      if [ -z "${map_refs[$ctx]+x}" ]; then
+        violation "$MAP_REL" "unmapped CONTEXT.md" "$(rel_of "$ctx") has no exact link in the map"
+      fi
+    done
+    unset map_refs
+  fi
+
+  if [ "${#domain_design[@]}" -eq 0 ]; then
+    return 0
+  fi
+  if [ "$ROOT_DESIGN_PRESENT" -eq 0 ]; then
+    violation "$ROOT_DESIGN_REL" "missing root design doc" "domain design docs exist but the root design doc is absent"
+    return 0
+  fi
+  declare -A root_refs=()
+  rd_dir="$(dirname "$ROOT_DESIGN")"
+  while IFS= read -r dest; do
+    dest="$(clean_dest "$dest")"
+    case "$dest" in
+    '' | '#'* | http://* | https://* | mailto:*) continue ;;
+    esac
+    dest="${dest%%#*}"
+    if [ -z "$dest" ]; then
+      continue
+    fi
+    case "${dest##*/}" in
+    design.md | design.html) ;;
+    *) continue ;;
+    esac
+    case "$dest" in
+    /*) abs="$(resolve_lexical "$REPO" "${dest#/}")" ;;
+    *) abs="$(resolve_lexical "$rd_dir" "$dest")" ;;
+    esac
+    # A link to the generated design.html counts as linking its design.md.
+    case "$abs" in
+    *.html) root_refs["${abs%.html}.md"]=1 ;;
+    *) root_refs["$abs"]=1 ;;
+    esac
+  done < <(extract_links "$ROOT_DESIGN")
+  for d in "${domain_design[@]}"; do
+    if [ -z "${root_refs[$d]+x}" ]; then
+      violation "$(rel_of "$d")" "unlinked domain design doc" "not linked from $ROOT_DESIGN_REL"
+    fi
+  done
+  unset root_refs
+}
+check_map_totality
+
+# --- Check 5: no orphan design.html --------------------------------------------
+
+check_orphan_html() {
+  local h
+  for h in ${design_htmls[@]+"${design_htmls[@]}"}; do
+    if [ ! -f "${h%.html}.md" ]; then
+      violation "$(rel_of "$h")" "orphan design.html" "no sibling design.md (generated file without its source)"
+    fi
+  done
+}
+check_orphan_html
+
+# --- Check 6: no verbatim-duplicate non-trivial lines ---------------------------
+#
+# Within one design.md or CONTEXT.md, a non-trivial prose line appearing
+# verbatim more than once means a fact lives in two places (restatement
+# instead of a cross-link). Scope is within one file, never across files.
+# Lines inside fenced code blocks are exempt (strip_fences), as are trivial
+# lines per is_trivial below.
+
+# A line is "trivial" (exempt from the dup check) when, after trimming, it is:
+#   - blank
+#   - a code fence (```), a horizontal rule / setext underline (---, ===)
+#   - a table separator row (| --- | --- |)
+#   - only punctuation/brackets/markup (no alphanumeric word of >=2 letters)
+#   - too short to be a real copy-pasted sentence (< 24 visible chars)
+# A non-trivial line carries actual prose; a verbatim repeat of one is the bug.
+is_trivial() {
+  local line="$1"
+  # Trim leading/trailing whitespace.
+  local t="${line#"${line%%[![:space:]]*}"}"
+  t="${t%"${t##*[![:space:]]}"}"
+
+  [ -z "$t" ] && return 0 # blank
+  case "$t" in
+  '```'*) return 0 ;; # code fence
+  # v3 adaptation of the v1 fence exemption: ::: block-directive markers
+  # (e.g. ":::invariant {enforcement=mechanism}") are structural markup the
+  # schema mandates — they repeat by design, exactly like fence openers.
+  ':::'*) return 0 ;;                            # block directive marker
+  '---' | '----'* | '===' | '===='*) return 0 ;; # rule / underline
+  esac
+  # Pure table separator: only | - : and spaces.
+  if printf '%s' "$t" | grep -Eq '^[|:[:space:]-]+$'; then
+    return 0
+  fi
+  # No "word" of two or more letters → pure markup/punctuation.
+  if ! printf '%s' "$t" | grep -Eq '[[:alpha:]]{2,}'; then
+    return 0
+  fi
+  # v3 doctrine adaptation ("cited, never restated"): a line whose content is
+  # entirely markdown links — with optional list markers/punctuation around
+  # them — is a citation, the legal form of repetition, not a restatement.
+  # Strip the links; if no prose word remains, the line is trivial.
+  local delinked
+  delinked="$(printf '%s' "$t" | sed -E 's/!?\[[^]]*\]\([^)]*\)//g')"
+  if ! printf '%s' "$delinked" | grep -Eq '[[:alpha:]]{2,}'; then
+    return 0
+  fi
+  # Too short to be a real sentence/bullet (< 24 visible chars).
+  if [ "${#t}" -lt 24 ]; then
+    return 0
+  fi
+  return 1
+}
+
+check_duplicate_lines() {
+  local doc rel line disp
+  for doc in ${design_docs[@]+"${design_docs[@]}"} ${contexts[@]+"${contexts[@]}"}; do
+    rel="$(rel_of "$doc")"
+    declare -A seen_count=()
+    while IFS= read -r line || [ -n "$line" ]; do
+      if is_trivial "$line"; then
+        continue
+      fi
+      if [ -n "${seen_count[$line]+x}" ]; then
+        seen_count[$line]=$((seen_count[$line] + 1))
+      else
+        seen_count[$line]=1
+      fi
+    done < <(strip_fences "$doc")
+    for line in "${!seen_count[@]}"; do
+      if [ "${seen_count[$line]}" -gt 1 ]; then
+        # Trim for display.
+        disp="${line#"${line%%[![:space:]]*}"}"
+        violation "$rel" "duplicate line" "'$disp' appears ${seen_count[$line]}x"
+      fi
+    done
+    unset seen_count
+  done
+}
+check_duplicate_lines
+
+# --- Check 7: no generation debris ----------------------------------------------
+#
+# A generation-wrapper artifact line inside a layer artifact means the writer
+# leaked its transport envelope into durable content. The line shapes are the
+# schema's layer_layout.generation_debris_patterns; the artifact set is every
+# design.md, CONTEXT.md, CONTEXT-MAP.md, COVERAGE.md, and ADR file. Fenced
+# code blocks are exempt (strip_fences): an example of the wrapper is
+# documentation, not leakage.
+
+map_files=()
+while IFS= read -r f; do map_files+=("$f"); done < <(find_layer_files CONTEXT-MAP.md)
+
+coverage_files=()
+while IFS= read -r f; do coverage_files+=("$f"); done < <(find_layer_files COVERAGE.md)
+
+check_debris() {
+  local f rel pat line disp
+  for f in ${design_docs[@]+"${design_docs[@]}"} ${contexts[@]+"${contexts[@]}"} \
+    ${map_files[@]+"${map_files[@]}"} ${coverage_files[@]+"${coverage_files[@]}"} \
+    ${adr_files[@]+"${adr_files[@]}"}; do
+    rel="$(rel_of "$f")"
+    for pat in "${DEBRIS_PATTERNS[@]}"; do
+      while IFS= read -r line; do
+        if [ -z "$line" ]; then
+          continue
+        fi
+        disp="${line#"${line%%[![:space:]]*}"}"
+        disp="${disp%"${disp##*[![:space:]]}"}"
+        violation "$rel" "generation debris" "'$disp' is a generation-wrapper artifact line (schema pattern $pat) — writer leakage, not layer content"
+      done < <(strip_fences "$f" | lines_matching "$pat")
+    done
+  done
+}
+check_debris
+
+# --- Check 8: layer homing -------------------------------------------------------
+#
+# The design layer lives entirely under docs/ (schema layer_layout.homing):
+# every layer basename has one or more declared homes, and a layer file found
+# anywhere else is a mishomed stray — the layout contract is validated on
+# every run, never assumed. A '<context>' placeholder in a home matches
+# exactly one path segment shaped by homing.context_segment.
+
+# is_homed <relpath> <basename> — true when relpath is a declared home.
+is_homed() {
+  python3 -c '
+import json, re, sys
+schema, rel, base = sys.argv[1], sys.argv[2], sys.argv[3]
+h = json.load(open(schema))["layer_layout"]["homing"]
+seg = re.compile(h["context_segment"])
+for home in h["homes"].get(base, []):
+    if "<context>" in home:
+        pre, post = home.split("<context>")
+        if rel.startswith(pre) and rel.endswith(post) and len(rel) > len(pre) + len(post):
+            mid = rel[len(pre):len(rel) - len(post)]
+            if "/" not in mid and seg.search(mid):
+                sys.exit(0)
+    elif rel == home:
+        sys.exit(0)
+sys.exit(1)' "$SCHEMA" "$1" "$2"
+}
+
+# homes_of <basename> — the declared homes, for the violation message.
+homes_of() {
+  python3 -c 'import json,sys; print(" or ".join(json.load(open(sys.argv[1]))["layer_layout"]["homing"]["homes"].get(sys.argv[2], [])))' "$SCHEMA" "$1"
+}
+
+check_homing() {
+  local f rel base
+  for f in ${design_docs[@]+"${design_docs[@]}"} ${design_htmls[@]+"${design_htmls[@]}"} \
+    ${contexts[@]+"${contexts[@]}"} ${map_files[@]+"${map_files[@]}"} \
+    ${coverage_files[@]+"${coverage_files[@]}"}; do
+    rel="$(rel_of "$f")"
+    base="${f##*/}"
+    if ! is_homed "$rel" "$base"; then
+      violation "$rel" "mishomed layer artifact" "$base must live at $(homes_of "$base") (schema layer_layout.homing)"
+    fi
+  done
+}
+check_homing
+
+# --- Staleness advisory (schema layer_layout.staleness_advisory) ----------------
+#
+# Advisory only — exit codes untouched. When the repo has moved threshold+
+# commits since any layer artifact last changed, print one line recommending
+# reconcile (sync). Skipped outside git, when the layer was never committed,
+# or when the schema copy predates the key (tolerate-absent).
+
+staleness_advisory() {
+  local threshold last count files
+  threshold="$(schema_get layer_layout staleness_advisory threshold_commits 2>/dev/null)" || return 0
+  [ "$IS_GIT_REPO" -eq 1 ] || return 0
+  files=(${design_docs[@]+"${design_docs[@]}"} ${contexts[@]+"${contexts[@]}"}
+    ${map_files[@]+"${map_files[@]}"} ${coverage_files[@]+"${coverage_files[@]}"}
+    ${adr_files[@]+"${adr_files[@]}"})
+  [ "${#files[@]}" -gt 0 ] || return 0
+  last="$(git -C "$REPO" log -1 --format=%H -- "${files[@]}" 2>/dev/null || true)"
+  [ -n "$last" ] || return 0
+  count="$(git -C "$REPO" rev-list --count "$last..HEAD" 2>/dev/null || echo 0)"
+  if [ "${count:-0}" -ge "$threshold" ]; then
+    echo "advisory: $count commit(s) since the design layer last changed (threshold $threshold) — reconcile (sync) before relying on the layer"
+  fi
+}
+staleness_advisory
+
+# --- Verdict -------------------------------------------------------------------
+
+if [ "$found" -ne 0 ]; then
+  exit 1
+fi
+echo "layer-integrity OK: ${#design_docs[@]} design doc(s), ${#contexts[@]} CONTEXT.md, ${#adr_files[@]} ADR(s) in $REPO"
+exit 0
