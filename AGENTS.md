@@ -1,5 +1,40 @@
 # AGENTS.md
 
+<!-- agent-skills:begin -->
+
+(machine-owned; do not edit inside this fence — re-run setup to refresh)
+
+## Agent skills
+
+**Design layer** — `CONTEXT-MAP.md` indexes the design documents
+(`design.md`, rendered `design.html`); terms are defined in each context's
+`CONTEXT.md`; decisions are recorded in `docs/adr/`.
+
+**Tracker** — local markdown under `issues/`: each feature lives at
+`issues/<feature-slug>/`, with `PRD.md` and `issues/<NN>-<slug>.md` files
+numbered from 01. Labels are the `Status:`/`Category:` header lines on each
+issue file, using the canonical role names directly as their values:
+`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`,
+`wontfix` (status); `bug`, `enhancement` (category).
+
+**AI disclaimer** — every AI-authored tracker comment starts with:
+`[AI-authored]`.
+
+**Design gate** — `scripts/design-render --check <each design.md>` and
+`scripts/layer-integrity .` check the design layer (exit 0 clean, 1
+violation, 2 error).
+
+**Staleness** — if the system has moved many commits since the design
+documents last changed, reconcile design and code before relying on the
+layer.
+
+<!-- agent-skills:end -->
+
+## Conventions
+
+Clean commit messages — no trailers, no attribution, no Co-Authored-By, no
+"Generated with" footers.
+
 ## Tooling
 
 This repo uses a nix-native dev environment.

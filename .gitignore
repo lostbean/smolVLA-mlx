@@ -1,4 +1,5 @@
 .DS_Store
-.claude/
+.claude/*
+!.claude/settings.json
 *.dump
 .direnv

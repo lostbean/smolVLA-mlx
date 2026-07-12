@@ -1,0 +1,421 @@
+{
+  "version": 3,
+  "description": "The one declared schema. Every script in scripts/ and every skill/primitive reads contracts from here; nothing redefines them locally.",
+  "anchors": {
+    "term": {
+      "heading_form": "### <Term> {#term-<slug>}",
+      "heading_regex": "^#{1,6} .*\\{#term-[a-z0-9]+(-[a-z0-9]+)*\\}\\s*$",
+      "id_pattern": "^term-[a-z0-9]+(-[a-z0-9]+)*$",
+      "slug_rule": "lowercase; collapse runs of non-alphanumerics to single hyphens; strip leading/trailing hyphens",
+      "definition_rule": "1–2 sentences stating what the concept IS — never what the system does with it; project-specific concepts only, general engineering vocabulary never earns a term",
+      "avoid_line": "optional '_Avoid_: <word>, <word>' line under the definition naming rejected synonyms — the vocabulary is opinionated: one best word, the rest rejected by name; the idiom test (primitives/communicate.md) records a rejected ambient idiom here",
+      "register": "optional '_Register_: <word-family> — <exemplar words>. Reject <rejected register>.' line, declared once per context (on the context's own anchor or as a glossary preamble), naming the word-family the context's vocabulary is drawn from. It is the target the idiom test (primitives/communicate.md) checks a term against: a term from ambient software/networking/business idiom rather than the declared register is a candidate the writer must replace or justify. Absent a declaration the test falls back to the universal rule — reject the ambient idiom, prefer the plain word. Enforcement is convention, never mechanism: no gate rules prose idiomatic.",
+      "slug_retirement": "a term-<slug> id is never repurposed for a different concept — retire the term and mint a new slug, never rebind",
+      "coverage_rule": "every load-bearing vocabulary the system actually uses earns a term — in particular EVERY schema enum that governs behavior (cure_class, timing, drift_kind, enforcement, run_mode, work_order_state, triage_roles, recommendation_strength, lens). A behavior-governing enum with no CONTEXT term is an undocumented-vocabulary gap the probe flags; the design must not lean on a word it never defines."
+    },
+    "adr": {
+      "element_form": "<a id=\"adr-NNNN\"></a> under the ADR's first `# ` title",
+      "element_regex": "^<a id=\"adr-[0-9]{4}\"></a>$",
+      "id_pattern": "^adr-[0-9]{4}$",
+      "filename_pattern": "^[0-9]{4}-[a-z0-9-]+\\.md$",
+      "lockstep": "the NNNN appears identically in filename, anchor id, and every reference",
+      "evolution": "append-only ledger — a decision is superseded by a new ADR that links the old one, never rewritten; the design document and CONTEXT are present-tense snapshots, the ADR set is the history",
+      "body_rule": "the title IS the decision statement (no 'ADR-NNNN:' prefix in the title text — the number lives in filename and anchor); body is 1–3 sentences: context, decision, why — a single paragraph is a complete ADR; considered-options / consequences sections only when the rejected alternatives or non-obvious consequences are genuinely worth remembering, never template filler",
+      "qualifies": [
+        "hard-to-reverse structural choices",
+        "technology selections with real trade-offs or lock-in",
+        "explicit no-s and their reasons",
+        "constraints invisible in the system itself",
+        "surprising conventions a reader would otherwise 'fix'",
+        "boundary and ownership calls",
+        "reversals of earlier decisions (the superseding ADR)"
+      ]
+    }
+  },
+  "layer_layout": {
+    "entry_points": ["docs/CONTEXT-MAP.md", "docs/design/design.md"],
+    "homing": {
+      "rule": "the design layer lives ENTIRELY under docs/ — every layer basename has a declared home, and a layer file found outside its home is a mishomed stray (layer-integrity checks this mechanically). The design references the system by path; the system never hosts layer files.",
+      "homes": {
+        "CONTEXT-MAP.md": ["docs/CONTEXT-MAP.md"],
+        "COVERAGE.md": ["docs/COVERAGE.md"],
+        "design.md": [
+          "docs/design/design.md",
+          "docs/design/<context>/design.md"
+        ],
+        "design.html": [
+          "docs/design/design.html",
+          "docs/design/<context>/design.html"
+        ],
+        "CONTEXT.md": [
+          "docs/design/CONTEXT.md",
+          "docs/design/<context>/CONTEXT.md"
+        ]
+      },
+      "context_segment": "^[a-z0-9][a-z0-9-]*$",
+      "note": "<context> is exactly ONE path segment matching context_segment — the context's kebab-case name (a context folder under docs/design/ holds only that context's layer files). ADR homing is owned by adr_dir + anchors.adr.filename_pattern, not listed here."
+    },
+    "multi_context": {
+      "context_home": "each context homes its design.md (+ generated design.html) + CONTEXT.md under docs/design/<context>/ — never colocated in a source directory (see homing)",
+      "context_map": "docs/CONTEXT-MAP.md links every CONTEXT.md as an exact markdown link, each with a one-line description; a relationships section declares cross-context relationships in the DDD vocabulary (customer/supplier, conformist, anti-corruption layer, shared kernel, separate ways) with direction; a shared term names exactly one owning context — others link to the owner, never redefine; the map owns context-level relationships only — fine-grained structural relations live in the root design document's system-at-a-glance",
+      "no_root_glossary": "in multi-context mode there is no single-context glossary (no docs/design/CONTEXT.md) — every glossary lives in its context folder; a glossary outside one is an orphan",
+      "root_design_doc": "docs/design/design.md links every context design document"
+    },
+    "single_context": {
+      "files": [
+        "docs/design/CONTEXT.md",
+        "docs/design/design.md",
+        "docs/design/design.html",
+        "docs/COVERAGE.md",
+        "docs/adr/"
+      ],
+      "split_trigger": "a second real vocabulary, never module count"
+    },
+    "adr_dir": "docs/adr",
+    "domain_discovery": "domains are DISCOVERED, not declared: cluster the system's entities and components by correlation strength — shared vocabulary, direct interaction, co-change — and form a domain from each strongly correlated cluster with weak external coupling. A discovered domain is an abstraction layer that composes with its peers through named seams. The file-level context split (own design.md + CONTEXT.md) is the STRONGEST form and requires a second real vocabulary; below that threshold discovered domains still structure the design document — its sections, its NN.M disclosure, and its diagrams follow the domain clusters, never an arbitrary outline. Discovery is CONTINUOUS, not creation-only: it runs when a design is created (new-design), when one is derived (sync onboard), and again on every meaningful design update — a delta that adds, moves, or newly couples components re-asks whether the clusters still hold (small deltas rarely change them; structural deltas and large refactorings must reconsider). A split or merge of domains is itself an intent change, led through the layer like any other. The clustering is PROPOSED by the agent and RULED by the user: domain boundaries are semantic understanding — how the owner sees the system — so the agent recommends a granularity with its justification (grilling when the carving is genuinely uncertain), and the user's view decides; under afk the recommendation proceeds and the decision is recorded for review",
+    "design_ish_markers": [
+      "CONTEXT.md",
+      "design.md",
+      "design.html",
+      "#term-",
+      ".md#adr-",
+      "docs/adr/",
+      "re:(^|/)[0-9]{4}-[a-z0-9-]+\\.md",
+      "re:(^|/)adr-[^/]+\\.md"
+    ],
+    "design_ish_markers_note": "entries starting with 're:' are regexes matched against the whole link target (catches adr-ish filenames linked outside docs/adr/ or without a fragment); others: trailing '/' = directory prefix, containing '#' = substring of the destination, else exact basename match",
+    "staleness_advisory": {
+      "threshold_commits": 30,
+      "note": "an ADVISORY, never a check — exit codes untouched: when the repo has moved threshold_commits+ commits since any layer artifact last changed, layer-integrity prints one line naming the count and recommending reconcile (sync). The always-on mechanical form of the standing-directives staleness hint; runs wherever the gate is wired (pre-commit, CI, probes). A script reading an older schema copy without this key skips the advisory silently (tolerate-absent). Skipped outside git and when the layer was never committed."
+    },
+    "generation_debris_patterns": ["^\\s*</content>\\s*$"],
+    "generation_debris_patterns_note": "python-re regexes matched line-by-line against every layer artifact (design.md, CONTEXT.md, CONTEXT-MAP.md, COVERAGE.md, ADRs; fenced code blocks exempt — an example is documentation): a matching line is a generation-wrapper artifact, writer leakage the sole writer must never leave behind. layer-integrity reads this list; extend it here as new wrapper shapes surface, never in the script.",
+    "ownership": {
+      "design_doc": "the design itself, in three aspects: the single authoritative snapshot of intent (the true source of design information), human-optimized (progressive disclosure, domain structure, reproduction depth), richly presented. Self-sufficient and concise: links a CONTEXT term where a word needs knowing; links an ADR briefly only where a reader would ask why — never depends on either to state the design",
+      "context": "semantics — the canonical definition, one term per anchor, plus every semantic nuance that would clutter the design document; no implementation detail",
+      "adr": "metadata to the design — the reasoning, discussion, and history behind one decision per anchor; NEVER contains the design itself, and the design document never depends on it",
+      "sole_writer_rule": "a sole writer is minted PER KIND of durable authored artifact — the general form, never a per-repo exception: the design layer's writer is design-write, the system-under-change's writer is work-order. A repo whose durable artifacts include a third kind (e.g. skill definitions, written by write-a-skill) has a third sole writer as an INSTANCE of this rule, not a carve-out. Framing any writer as a 'this-repo exception' leaks the dogfood instance into the generic design."
+    },
+    "coverage_map": {
+      "what": "the answer to 'is any part of the system blind to the design'. docs/COVERAGE.md (its declared home — see homing), referenced from the entry points: a table listing every meaningful system part with a status and a pointer.",
+      "statuses": {
+        "captured": "a design unit describes this part at reproduction grade — the row links the owning design-document section or context",
+        "standard": "intentionally not detailed — evident boilerplate the owner chose not to design (conventional dev tooling, CI, generated files). A recorded, revisitable decision, not a gap. The row states WHY it is standard.",
+        "out-of-scope": "not a designed subsystem at all (license, .gitignore, vendored third-party). The row says so."
+      },
+      "granularity": "one row per meaningful part, at the coarsest honest grain — a whole subsystem, not every file. The agent proposes the part list and each status; the user rules (see completeness.breadth.capture_everything_default).",
+      "enforced_by": "the conformance probe diffs the system's actual parts against the map: a part present in the system but absent from the map is uncovered drift. review-design walks the map for breadth. Not mechanically enforced by a script yet — the part-enumeration is judgment — so the honest tag is convention until a coverage-lint exists.",
+      "revisitable": "status is not permanent: a standard part that grows non-standard is promoted to captured through the normal design-change path.",
+      "currency": "the map is created at onboard and MAINTAINED at every reconcile (not only first generation): the conformance probe's breadth sweep reconciles it against the current system each run — new parts get a status, deleted parts' rows are pruned, standard parts that grew logic are promoted to captured. coder adds a row when a chunk introduces a whole new subsystem. So the map cannot silently rot.",
+      "patch_accumulation": "DERIVED from git history, never stored: for every captured row, the probe computes the commits touching the row's paths since the row's owning design document last changed (churn-vs-design-age), and reports the ratio on every run exactly like ledger aging — never silently skipped. A row whose churn reaches the flag threshold while its design stays untouched is a patch-accumulation candidate: the probe emits a proposed (design-change, tracked) finding for the owning unit — a PROPOSAL routed like any finding, never an auto-route; feature churn under an honest design is the human's call to dismiss. Flag threshold: 5+ commits with zero design movement over the same span; revisable here, cited by the probe and review-design, never redefined locally."
+    },
+    "artifact_filenames": {
+      "names": [
+        "design.md",
+        "design.html",
+        "CONTEXT.md",
+        "CONTEXT-MAP.md",
+        "COVERAGE.md"
+      ],
+      "note": "the design layer's own file basenames. Every file carrying one of these names is a layer artifact and must sit at its declared home (see homing) — the layer never colocates into source directories, so any tool governing a source directory may treat these basenames like any other stray file."
+    },
+    "unit_model": {
+      "recursive": "the design layer is a recursively self-similar TREE of units. A unit is the same shape at every altitude — an overview plus its child units plus a pointer to its parent. 'context', 'component', and an NN.M subsection are depth labels on ONE node type, not different things. The root indexes contexts; a context indexes its components; a component indexes its NN.M sub-parts; the recursion continues until a unit passes the reproduction test (design_doc.completeness).",
+      "index_children_only": "a unit's overview indexes ONLY its own children. A reference to a unit that is not its child is always an explicit POINTER — down to a child, up to an ancestor, or lateral to another unit — never a silent inclusion and never a silent omission. A spanning index (a 'whole set at a glance') that lists some off-node units and drops others is an authoring bug: either point to every off-node unit or scope the section to this unit's own children, and state which. This is the general rule; a domain document half-listing sibling-context-owned units is one instance of violating it.",
+      "lateral_graph": "OVERLAID on the recursive tree is a lateral REFERENCE GRAPH — CONTEXT terms owned by one unit and cited by others, seams between sibling units, and the DDD relationships (the set is owned by layer_layout.multi_context.context_map) recorded in the context map. These lateral edges are NOT the recursion (the tree gives containment/disclosure; the graph gives cross-references) and are not the file split either.",
+      "three_concerns_distinct": "keep three concerns separate, never conflated: (1) RECURSION governs containment and progressive disclosure (this model); (2) the FILE SPLIT — where the recursion breaks into separate design.md/CONTEXT.md files — is domain_discovery's second-real-vocabulary rule, a semantic judgment, not a depth counter; (3) the LATERAL GRAPH is cross-reference. A unit can recurse deeply inside one file (NN.M.K) without a file split, and can hold lateral edges without those being parent/child."
+    }
+  },
+  "design_doc": {
+    "source": "design.md — authored markdown with custom blocks; the reviewable unit",
+    "rendered": "design.html — generated by scripts/design-render, never hand-edited, committed and promoted alongside its source (freshness proven by regenerate-and-compare)",
+    "syntax": "::: container directives for semantic blocks (remark/markdown-it style); standard fenced code for mermaid/vega-lite; CONTEXT.md and ADRs stay plain markdown with the anchor contract",
+    "generation": {
+      "pass": "validation + typesetting normalization in one pass; fail-closed on unknown blocks, missing or mis-ordered foundation, malformed pending entries, broken diagrams; a design that does not render clean does not promote",
+      "link_rewrite": "authors write .md links throughout (markdown layer stays self-consistent); when rendering, the generator rewrites every link whose resolved target is a design.md (whole-document navigation) to the sibling design.html, so the HTML layer is self-consistent. Anchor links into a CONTEXT term (.md#term-) or an ADR (.md#adr-) are left unchanged — those anchors live in markdown, with no rendered page. Rewrite is by resolved target basename, fragment-less-or-not: foo/design.md -> foo/design.html; foo/design.md#02-x -> foo/design.html#02-x"
+    },
+    "blocks": {
+      "goal": "pragmatic, practical objective; attrs: lens (optional)",
+      "no-goal": "explicit exclusion",
+      "principle": "aspirational, abstract value that guides judgment; attrs: id (stable, referencable from prose, e.g. P1), lens — both optional",
+      "invariant": "checkable property; attrs: enforcement=mechanism|partial|convention — mechanism and partial must each name their script; lens optional",
+      "pending": "pending-ledger entry; attrs: kind=build|verify|foundation|ruling; body: summary, adr link, optional tracker issue",
+      "cards": "a grid of cards — the workhorse structure for component maps, principle grids, rationale cards, comparison rows, caption strips; items delimited by ### headings inside the block (body before the first ### is a violation); attrs: cols=2|3|4 (default auto-fit), size=md|sm, tint (optional accent)",
+      "info": "callout; attrs: title (optional micro-caps heading), tint (optional)",
+      "warning": "callout; attrs: title, tint (optional)",
+      "svg": "embed an SVG from a sibling file; attrs: file",
+      "mermaid": "fenced code block — structure diagrams. Validated at build time via mermaid.parse() (the same grammar and version as the client-side render), so a syntax error fails the gate, never the reader's browser. Convention: in-domain nodes classDef-tinted with the context accent, external nodes white with dashed border",
+      "vega-lite": "fenced code block — plots, JSON spec"
+    },
+    "block_fields": {
+      "principle": "block contracts ARE the design language's invariants: each kind declares the information it must capture (fields, attrs, allowed vocabularies), the generator enforces the contract fail-closed at render time, and the writer instructs authors through it. Capturing a NEW kind of information reliably means minting or extending a block contract — schema + renderer + design-write evolve in lockstep, and the change re-validates every existing document. Never capture load-bearing language as free-form prose when a contract can hold it",
+      "statement_blocks": "goal, no-goal, principle, invariant share one anatomy: a required LABEL — bold text alone on the block's first line, ≤64 chars, plain (no links) — the short description; then the BODY — the long description as markdown (required, except optional on no-goal; for invariant the body IS the checkable statement). Badges render in a fixed head row derived from attrs: principle → id chip + lens pill(s); invariant → enforcement chip (+ script chip when a script is named) + lens pill(s); goal/no-goal → lens pill(s) when given. The lens attr accepts a multi-value list (lens=state+composition, same syntax as inline combos), validated against the lens enum",
+      "rendered_slots": "every block renders the same slot structure for the stylist: .entry-head (containing .label and .badges) then .body — cards items, callouts (title = label), and pending entries (kind badge + since = badges) follow the same anatomy",
+      "validated": "field presence, label length and shape, and attr legality are generation-time violations — the structure is enforced by design-render on every render, so architectural changes to the block language always re-validate the whole document"
+    },
+    "inline": {
+      "lens_pill": "a code span `lens:<name>` renders as that lens's pill; combos `lens:a+b` render one gradient pill with lenses auto-sorted into the fixed enum order; an unknown lens name is a violation"
+    },
+    "accents": {
+      "values": ["teal", "violet", "amber", "blue", "rose", "slate"],
+      "note": "the tint axis marks OWNERSHIP (a bounded context keeps one stable accent across all its documents); lens pills mark JUDGMENT — two axes, never conflated"
+    },
+    "frontmatter_keys": {
+      "eyebrow": "micro-caps identity line above the title — the document's position in the layer hierarchy, with links up (e.g. 'Domain overview · Meta · [root]')",
+      "lede": "muted one-to-three-line summary under the title; inline markdown",
+      "footer": "colophon line — ownership split restated, links back up"
+    },
+    "foundation_cardinality": "at least one goal, zero or more no-goals, at least one invariant, at least one principle — in that order, all inside section 00. EXEMPTION: a multi-context root that only indexes its child contexts declares 'index_only: true' in frontmatter and is waived from the per-kind minimum — it carries only genuinely cross-context foundation and points down to each context for the rest, never restating a context-owned goal/invariant/principle. The flag is legal only on a document that links at least one child <context>/design.md; on a single-domain document (no child contexts) it is a violation, so a leaf can never skip its own foundation. The order rule still binds whatever foundation the root does carry.",
+    "spine": [
+      "00 Foundation — goals, no-goals, invariants, principles: each in its block kind, in that order",
+      "Pending updates — unnumbered, immediately after the foundation; omitted when empty",
+      "01 System at a glance",
+      "02..0N-1 progressive breakdown, gross to fine — recursing via sub-numbered subsections (NN.M) until every unit passes the completeness test",
+      "0N end-to-end walkthrough"
+    ],
+    "completeness": {
+      "two_axes": "completeness has two distinct axes, both required. BREADTH (coverage): every meaningful system or subsystem appears in the design layer — captured, or explicitly annotated as intentionally-not-detailed. DEPTH (reproduction grade): each captured unit is deep enough to rebuild. Depth without breadth is a layer that describes some parts perfectly and is blind to others; breadth without depth is an index with no design. A completeness pass checks BOTH.",
+      "breadth": {
+        "property": "no meaningful part of the system is invisible to the design layer. The question breadth asks: is there any subsystem the design is blind to? Every part is accounted for in the coverage map (layer_layout.coverage_map) with one status — captured, standard, or out-of-scope. An unaccounted part is uncovered drift (drift_kind), never a silent omission.",
+        "capture_everything_default": "the default is to capture everything. The deciding question for any part is the reproduction test: would an independent agent, handed the design layer alone, need this part's DESIGN to rebuild an equivalent system? A part carries real logic or non-obvious design (its shape was a decision) -> capture it. A part is plain, conventional infrastructure whose shape a competent builder would reproduce the same way from its mere presence (standard dependency manifests and lockfiles, standard build/test/CI wiring, formatter/linter config, ignore and license files, vendored third-party) -> a candidate for standard. This is GENERIC over any stack — the categories are 'carries logic / design decisions' vs 'vanilla infrastructure', never a fixed tool list; a bespoke or complex build pipeline, a non-trivial dependency-fetching scheme, or custom CI logic is itself design and should be captured. A part is marked standard or out-of-scope ONLY by an explicit decision: the agent proposes the status with its reason ('this looks standard — skip it from the design?'), and the user rules — tracking is always available if the user wants it, and the agent recommends capturing anything that looks less-than-standard. Every mark is explicit and revisitable — a standard part that grows non-standard is promoted to captured. Being explicit, not implicit, is the point.",
+        "boilerplate_note": "'internals derivable from a captured unit (algorithm bodies, boilerplate within it)' are legitimately absent from DEPTH — a depth exclusion inside a covered unit, not a breadth decision. A whole standard subsystem left undetailed is a BREADTH decision recorded in the coverage map."
+      },
+      "test": "the reproduction test (the DEPTH axis): a third party holding only the layer — design document, CONTEXT, ADRs, no source — converges on an equivalent implementation of every CAPTURED part: the same components, interfaces, interactions, held invariants, and failure behavior. Internals derivable from those (algorithm bodies, boilerplate) are legitimately absent; abstractions, contracts, state, and interactions never are",
+      "unit_shape": "each design unit's subsection answers: what it is responsible for; the interface it exposes; who it interacts with and how; the invariants it holds; how it fails. A STATEFUL unit additionally models its state machine COMPLETELY — the states AND the transitions between them (edges, their guards/triggers, and re-entries) — never just the list of state names. A schema-declared state enum (run_mode, work_order_state, triage_roles) whose transitions live only in an implementation file is a depth gap: the edge set is load-bearing and underivable from the node list alone.",
+      "depth_stop": "a section is deep enough exactly when its unit passes the reproduction test — never a page budget, never a fixed level count",
+      "applied_by": "sync (onboard scopes coverage with the user first, then derives captured parts to reproduction grade; the probe audits BOTH axes), review-design (breadth pass over the coverage map + per-unit reproduction walk), new-design (the fixpoint includes the intended coverage), incremental updates (a meaningful new subsystem enters the coverage map before it is built)"
+    }
+  },
+  "assumptions": {
+    "system_home": "v3 assumes every system under design lives in a git repo. Future named concept, deliberately undesigned: 'stealth mode' — a companion design repo overlaying another repo/system without injecting skills or design files into it."
+  },
+  "pending_ledger": {
+    "location": "one design-document section immediately after the foundation header; omitted entirely when empty; an entry lives in the design document that owns the affected structure",
+    "entry": [
+      "kind",
+      "one-line summary",
+      "since (YYYY-MM-DD — lets review-design report aging entries as design debt)",
+      "adr link (required for build entries; optional for verify/foundation/ruling — they may predate any ADR)",
+      "optional tracker-issue link"
+    ],
+    "kinds": {
+      "build": "designed, not yet built — cleared by explicit sign-off when the system catches up; independent conformance double-check on request",
+      "verify": "derived from the system, faithfulness unverified — cleared mechanically by the first clean conformance probe",
+      "foundation": "foundation content the system cannot yield (goals, no-goals, principles) — deferred at bootstrap or underivable at onboarding; cleared by the grilling session that fills it",
+      "ruling": "an open owner decision the layer cannot settle; intentional-open to the conformance probe; cleared by the owner's ruling, recorded and applied"
+    },
+    "rule": "the single home for intentionally-open state; no badges scattered through pages",
+    "link_resolution": "design-render requires build entries to carry a link whose fragment matches the adr id pattern (verify/foundation/ruling entries are link-optional — they may predate any ADR); whether a link resolves to a real anchor is layer-integrity's job (entry links are ordinary design-ish links)"
+  },
+  "enums": {
+    "cure_class": {
+      "values": [
+        "in-place-fix",
+        "design-change",
+        "skill-change",
+        "durable-fact"
+      ],
+      "note": "proposed by any skill (harvesters, reviewers, coder); validated and routed only by frontdesk — when no frontdesk is in the loop (direct invocation), the proposing skill presents the list and OFFERS to run it (it never routes itself); a genuine one-off carries none and is dropped. durable-fact = worth remembering, no repo change: frontdesk routes it to agent memory"
+    },
+    "timing": {
+      "values": ["now", "tracked"],
+      "note": "frontdesk's second, orthogonal decision: act in-session or defer to the tracker via to-issues; cure_class says WHAT kind of cure, timing says WHEN; skills propose, frontdesk (or the user, on direct invocation) decides"
+    },
+    "drift_kind": {
+      "values": ["unbuilt", "undocumented", "divergent", "bypass", "uncovered"],
+      "least_surprise_default": {
+        "unbuilt": "build it",
+        "undocumented": "document it",
+        "divergent": "side that carries the decision weight, not recency",
+        "bypass": "restore the designed seam unless the bypass is the better design",
+        "uncovered": "a meaningful system part is in neither the design nor the coverage map — propose its status (capture it, or mark standard/out-of-scope) and let the user rule; default to capture"
+      }
+    },
+    "enforcement": {
+      "values": ["mechanism", "partial", "convention"],
+      "note": "mechanism and partial each name their script (mechanism: the script decides the whole property; partial: the script checks its mechanical shadow); a convention truthfully labelled beats a mechanism falsely claimed"
+    },
+    "run_mode": {
+      "values": ["hitl", "afk"],
+      "rule": "derived, never asked: is a human answering now? A decidable failure BLOCKS an afk run; it WARNS-and-offers interactively. Judgment checkpoints (path confirmations, hypothesis re-ranks) never block afk: proceed with the recommended option and record the decision in the run report"
+    },
+    "work_order_state": {
+      "values": [
+        "pending",
+        "dispatched",
+        "in-review",
+        "accepted",
+        "bounced",
+        "abandoned",
+        "escalated"
+      ],
+      "note": "bounced re-enters dispatched with the same agent (it keeps its context) and the bounce report appended",
+      "failure_edges": {
+        "abandoned": "the agent is lost (dead, unresponsive, no delivery) — re-dispatched as a FRESH order whose brief carries the appended history; bounce-same-agent cannot apply to a dead agent",
+        "escalated": "the brief itself is judged flawed — the orchestrator fixes the brief and re-dispatches; never bounced onto the agent"
+      }
+    },
+    "triage_roles": {
+      "category": ["bug", "enhancement"],
+      "state": [
+        "needs-triage",
+        "needs-info",
+        "ready-for-agent",
+        "ready-for-human",
+        "wontfix"
+      ],
+      "note": "every issue carries exactly one of each; canonical names — the mapping to real label strings lives in the repo config"
+    },
+    "recommendation_strength": {
+      "values": ["strong", "worth-exploring", "speculative"],
+      "note": "stated on every lens-board finding alongside (cure_class, timing); the honest confidence tag — hedging prose is forbidden, the tag carries the uncertainty"
+    },
+    "lens": {
+      "values": [
+        "modeling",
+        "depth",
+        "composition",
+        "state",
+        "invariants",
+        "robustness"
+      ],
+      "note": "the order is fixed and load-bearing: combo pills and combo findings list contributing lenses in this order (see primitives/lens-board.md and the style asset). Modeling leads because it is upstream — it carves the entities the other five then judge."
+    }
+  },
+  "skill_frontmatter": {
+    "required": ["name", "description", "domains", "status"],
+    "name_rule": "name equals the skill's directory name",
+    "description_rule": "third person; sentence 1 = what it does; then concrete 'Use when …' trigger phrases — the description is the only routing signal the agent sees",
+    "description_max_chars": 1024,
+    "domains": {
+      "field": "domains",
+      "open_set": true,
+      "current": [
+        "onboarding",
+        "engineering",
+        "tracking",
+        "meta",
+        "utility",
+        "research",
+        "writing"
+      ]
+    },
+    "status": {
+      "field": "status",
+      "values": ["ship", "personal", "wip"],
+      "rule": "ship ⇔ listed in README index and .claude-plugin/plugin.json"
+    }
+  },
+  "scripts_contract": {
+    "exit_codes": {
+      "clean": 0,
+      "violation": 1,
+      "error": 2
+    },
+    "fail_closed": "anything that LOOKS like a design-ish reference but does not resolve to a known-good shape is a violation, never a silent skip",
+    "location": "scripts/ only — never inside a skill or primitive folder",
+    "self_test": "every check script ships a fixture-based self-test asserting exit codes",
+    "design_render": "the md→html generator doubles as the design document's structural validator; the gate regenerates and compares to prove design.html fresh",
+    "distribution": "setup-project-skills copy-installs the checks AND schema/design-schema.json into target repos (scripts/ + hook/CI wiring; layer-integrity reads the schema from its script-sibling copy). Each installed script carries a 'design-schema-version: <N>' stamp near the top (comment leader varies by language — grep the bare substring, never the leader); generated/bundled tools additionally carry a 'design-render-build: <hash>' stamp because behavior can change under an unchanged schema version. sync compares BOTH stamps to the framework's copies via scripts/gate-stamp-check (copy-installed alongside the checks) and warns-and-offers re-install when stale — staleness warns rather than blocks: an old gate still runs, it is just behind. The framework home is DERIVED, never searched for: the executing skill's own SKILL.md is a symlink into the framework repo, so its realpath names the home (the repo root two levels up, the one holding schema/design-schema.json); when a host installed the skill by copy and the derivation fails, ask the user for the framework home once — never scan the filesystem"
+  },
+  "acceptance_rubric": {
+    "note": "declared once here; cited by work-order (acceptance gate 2) and review-implementation (adherence + craft axes); never re-inlined or forked",
+    "checks": [
+      "builds what was asked",
+      "honors the inlined design constraints (anchors cited)",
+      "holds the interface contract exactly",
+      "tests assert behavior, not implementation",
+      "tests actually cover the acceptance criteria",
+      "no scope creep",
+      "introduces no per-case special branch whose general form is unnamed — a one-off adaptation either generalizes or bounces (the taste canon applied at change time, not just review time)",
+      "captured in the design layer, or pre-cleared as behavior-only",
+      "standing directives respected",
+      "quality holds (lens spot-check)"
+    ]
+  },
+  "tracker_writes": {
+    "ai_disclaimer": "every write to an issue tracker carries an AI-disclaimer prefix (text from the repo config)",
+    "deferred_skill_change": "a tracked skill-change files in the tracker of the repo that owns the skills (the framework repo), cross-referenced from the repo where it surfaced",
+    "issue_birth": "issues enter the tracker as needs-triage — except to-issues may publish issues born ready-for-agent when the publishing session had explicit user sign-off on the slice set. PRDs and other non-work documents are born ready-for-human (they are inputs to slicing, not grabbable work; the ready-for-agent exception is to-issues' alone)"
+  },
+  "repo_config": {
+    "home": "the fenced 'Agent skills' block homes in AGENTS.md, the cross-agent standard (docs/adr/0015-agents-md-canonical-home.md): AGENTS.md exists → merge the block there and ensure the CLAUDE.md link; neither file exists → create AGENTS.md and the link; only CLAUDE.md exists → merge into it as-is, never migrate silently (hitl: offer the conversion once; afk: merge and report the deviation); never write the block into both files. The link is a committed symlink CLAUDE.md → AGENTS.md, unconditional (the framework supports macOS/Linux only) because Claude Code reads only CLAUDE.md (docs-verified 2026-07-08); on detect, an existing CLAUDE.md that is already a symlink to AGENTS.md, or a file whose content imports AGENTS.md (an @AGENTS.md stub), counts as a valid link",
+    "block_fence": {
+      "begin": "<!-- agent-skills:begin -->",
+      "end": "<!-- agent-skills:end -->",
+      "first_line_inside": "(machine-owned; do not edit inside this fence — re-run setup to refresh)",
+      "refresh_rule": "re-runs replace exactly the fenced region and touch nothing outside it; the block carries NO version stamp — consumption-only content has no rot vector"
+    },
+    "content_contract": "consumption-only: a short, self-contained description of the framework-derived artifacts, usable by a reader or agent WITHOUT the skills — NO skill names, NO framework-home references, NO behavioral rules; behavior lives in the skills themselves",
+    "seeded_conventions": "repo-authored prose setup-project-skills seeds OUTSIDE the fence (docs/adr/0016-conventions-seeded-outside-the-fence.md): created if absent, owned by the repo afterwards, never refreshed — the fence stays consumption-only. Current set: clean commit messages — no trailers, no attribution, no Co-Authored-By, no 'Generated with' footers",
+    "contents": [
+      "design-layer entry points (CONTEXT-MAP.md → design documents; terms in CONTEXT.md; decisions in docs/adr/) — marked pending when the layer is not yet created",
+      "tracker binding, with verbatim commands/paths",
+      "triage role-to-label map",
+      "AI-disclaimer text",
+      "gate run instructions (scripts/design-render --check on each design.md, scripts/layer-integrity .)",
+      "staleness hint (skill-free): system moved many commits since the design documents last changed → reconcile design and code before relying on the layer (layer-integrity prints this advisory mechanically past the layer_layout.staleness_advisory threshold)"
+    ],
+    "framework_home_grant": "setup-project-skills also writes the framework home into the target repo's .claude/settings.json (permissions.additionalDirectories) so composed playbooks stay readable in headless/afk runs — without it, skills cannot load their primitives and MUST stop rather than improvise; the Agent skills block never references the grant (the grant serves the skills, the block serves the reader)",
+    "local_tracker": {
+      "root": "issues/ (a config value; this is the default)",
+      "layout": {
+        "feature_dir": "<root>/<feature-slug>/",
+        "prd": "<root>/<feature-slug>/PRD.md",
+        "issue_file": "<root>/<feature-slug>/issues/<NN>-<slug>.md — NN numbered from 01"
+      },
+      "roles": "each issue file carries two header lines near the top — 'Status: <state-label>', 'Category: <category-label>' — labels per the repo's role-to-label map. Whether a slice needs a human is not a stored label: it is derived at build time from run_mode (a decidable gap blocks an afk run), never predicted per issue",
+      "comments": "conversation appends to the bottom of the file under a '## Comments' heading; every entry carries the AI-disclaimer prefix (tracker_writes.ai_disclaimer)",
+      "publish": "create a new file under the feature dir, creating directories as needed",
+      "fetch": "read the file at the referenced path; the user normally passes the path or issue number"
+    },
+    "owner": "setup-project-skills (sole writer)",
+    "consumers": ["triage", "to-issues", "to-prd", "sync", "frontdesk"]
+  },
+  "idempotency_protocol": {
+    "note": "the five-step protocol every repo-wiring artifact goes through; cited by setup-project-skills and bootstrap-dev-env — never re-inlined",
+    "steps": [
+      "detect — inspect the repo; never assume",
+      "create — only if absent",
+      "merge — non-destructively if present: add what is missing, never delete or rewrite user content",
+      "skip — already correct, touch nothing",
+      "report — every artifact appears in the final report with the action taken"
+    ]
+  },
+  "test_smells": {
+    "note": "decision procedure for the acceptance_rubric item 'tests assert behavior, not implementation'; cited by work-order (gate 2) and review-implementation (craft axis); never re-inlined or forked",
+    "red_flags": [
+      "mocks an internal collaborator (your own module)",
+      "asserts call counts or call order",
+      "reaches into private state",
+      "breaks on a behavior-preserving refactor",
+      "verifies through a side channel instead of the public interface"
+    ]
+  },
+  "brief_durability_contract": {
+    "owner": "this schema entry is canonical; primitives/work-order.md binds it for work orders",
+    "litmus": "a fresh agent with zero memory delivers from the brief alone",
+    "rules": [
+      "behavioral, not procedural",
+      "inline what the agent must reason from; reference only stable paths (ADR, glossary, config)",
+      "never file paths or line numbers — they go stale",
+      "testable acceptance criteria",
+      "explicit out-of-scope"
+    ]
+  },
+  "primitive_contract": {
+    "concern": "a primitive is a hidden shared playbook owning exactly one concern",
+    "admission": "a primitive is admitted only with at least two CONSUMERS — skills or sibling primitives, counted alike; below two consumers the behavior stays skill-local. (e.g. communicate is admitted by its sibling-primitive consumers.)",
+    "bundled_resource": "a bundled resource is a file owned by exactly ONE primitive (e.g. primitives/lenses/* owned by lens-board; primitives/assets/*), loaded lazily by its owner and counted as part of that owner — exempt from the two-consumer admission floor, because it is one primitive's material, not a shared concern",
+    "composition": "consumers compose a primitive through the relative symlink and never re-inline its concern"
+  },
+  "modeling_lens": {
+    "concern": "how the system is MODELED — the carving of the domain into entities and their relationships, BEFORE the other lenses judge the resulting structure. Orthogonal to composition (correlated, not overlapping): modeling PRODUCES the parts; composition judges whether those parts stay unbraided. A design can carve the domain wrong yet still be deep/composable/fail-loud — no other lens catches that.",
+    "question": "are these the right entities, and are their relationships, transformations, and actions surfaced?",
+    "enemy": "mis-carving reality — wrong or missing entities, unsurfaced relationships, unnamed transformations, misplaced actions.",
+    "probe": "the DDD decomposition, in order: (1) ENTITIES — the things the domain is made of (entities, value objects, aggregates); (2) RELATIONSHIPS — how they relate (associations, the bounded-context map, DDD relationships, the set owned by layer_layout.multi_context.context_map) — these are part of the lateral graph of layer_layout.unit_model (one of its three edge kinds, alongside CONTEXT-term citations and sibling seams); (3) TRANSFORMATIONS — the maps between entities (how one derives/becomes another); naming these reveals which relationships are load-bearing and drives the design; (4) ACTIONS — the operations on entities and the transformations run on them (domain services, commands); (5) COMPOSITION & RECURSION — how entities compose into larger abstractions, and where composition becomes self-similar (recursion is composition that reuses its own definition — a powerful special case, always asked, never forced; see unit_model).",
+    "ddd_framing": "DDD is the DEFAULT and most fundamental modeling frame — even more generic than composition or recursion, because you carve the entities before asking how they compose. It is HIGHLY RECOMMENDED, never enforced: a system that models better as dataflow, types, or a flat set may say so, stating the frame it chose. Recursion and deep composition are powerful outcomes to reach for by reducing entities to smaller composable parts — reached for, not mandated.",
+    "not_this": "not 'draw a UML diagram of every class'; not forcing domain vocabulary onto a system without a domain. The lens asks whether the CHOSEN modeling frame carves reality well.",
+    "applied_by": "new-design (the modeling method derives the structure — its 'find the structure' step); grill-with-design (re-models when intent changes the entities); review-design (the board's modeling lens judges whether the carving holds)."
+  }
+}
