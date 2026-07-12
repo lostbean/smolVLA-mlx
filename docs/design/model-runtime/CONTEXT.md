@@ -39,3 +39,13 @@ LeRobotDataset format, used as [FineTuneJob](design.md) input (components
 01.3, 01.4). A value object; its provenance (real robot usage or a simulation
 environment) never changes its shape or how a `FineTuneJob` adapter consumes
 it.
+
+### LeRobot-native checkpoint {#term-lerobot-native-checkpoint}
+
+A real published SmolVLA checkpoint's actual on-disk shape: a flat
+`config.json` (a `type` key, not `model_type`; no nested `vision_config`/
+`text_config`) plus a single flat `model.safetensors` with LeRobot's own
+tensor-name prefixes — LeRobot's policy-checkpoint convention, not mlx-vlm's
+usual HF-`transformers`-shaped layout. `SmolVLAModel.from_pretrained()` reads
+this shape directly. _Avoid_: "HF checkpoint" (implies the nested
+`transformers`-style shape most mlx-vlm models expect, which this is not).

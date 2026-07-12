@@ -1097,7 +1097,11 @@ quantized or otherwise. See
 <p>SmolVLA's directory name under <code>mlx_vlm/models/</code> matches its <code>model_type</code> in
 <code>config.json</code> exactly, per mlx-vlm's existing dynamic-import convention —
 partial because <code>test_models.py</code> checks load/shape correctness, not the
-convention-following itself.</p>
+convention-following itself. A real SmolVLA checkpoint's <code>config.json</code> is
+<a href="CONTEXT.md#term-lerobot-native-checkpoint">LeRobot-native</a>, not mlx-vlm's
+usual HF-nested shape — <code>SmolVLAModel.from_pretrained()</code> reads it directly
+rather than routing through mlx-vlm's shared dynamic-dispatch machinery. See
+<a href="../../adr/0006-config-adapter-for-lerobot-checkpoint-shape.md#adr-0006">ADR-0006</a>.</p>
 </div>
 </div>
 </div>
@@ -1183,10 +1187,16 @@ running the flow-matching action expert to produce one
 SmolVLAModel.from_pretrained(checkpoint_path) -&gt; SmolVLAModel
 SmolVLAModel.infer_action(image, state, instruction) -&gt; ActionChunk
 </code></pre>
-<p><strong>Interacts with:</strong> mlx-vlm's existing weight-loading and vision/language
-encoding plumbing (reused, not reimplemented); <code>control-loop</code>'s ZeroMQ client,
-which is the only caller of <code>infer_action()</code> at runtime, through the fallback
-adapter.</p>
+<p><strong>Interacts with:</strong> mlx-vlm's existing vision/language encoding plumbing
+(reused, not reimplemented) and its safetensors-reading primitives; weight
+<em>dispatch</em> is not reused, since a real checkpoint's
+<a href="CONTEXT.md#term-lerobot-native-checkpoint">LeRobot-native config</a> does not
+carry mlx-vlm's <code>model_type</code>/nested-config shape — <code>from_pretrained()</code> reads
+it directly instead of routing through mlx-vlm's generic
+<code>get_model_and_args()</code> dispatch, keeping that shared path unmodified for
+every other model (see <a href="../../adr/0006-config-adapter-for-lerobot-checkpoint-shape.md#adr-0006">ADR-0006</a>).
+<code>control-loop</code>'s ZeroMQ client is the only caller of <code>infer_action()</code> at
+runtime, through the fallback adapter.</p>
 <p><strong>Invariants held:</strong> never implements <code>generate()</code>; state is compressed to
 exactly one token per SmolVLA's own architecture, matching the reference
 implementation's shape.</p>

@@ -66,7 +66,11 @@ quantized or otherwise. See
 SmolVLA's directory name under `mlx_vlm/models/` matches its `model_type` in
 `config.json` exactly, per mlx-vlm's existing dynamic-import convention —
 partial because `test_models.py` checks load/shape correctness, not the
-convention-following itself.
+convention-following itself. A real SmolVLA checkpoint's `config.json` is
+[LeRobot-native](CONTEXT.md#term-lerobot-native-checkpoint), not mlx-vlm's
+usual HF-nested shape — `SmolVLAModel.from_pretrained()` reads it directly
+rather than routing through mlx-vlm's shared dynamic-dispatch machinery. See
+[ADR-0006](../../adr/0006-config-adapter-for-lerobot-checkpoint-shape.md#adr-0006).
 :::
 
 :::principle {id=P1 lens=composition}
@@ -142,10 +146,16 @@ SmolVLAModel.from_pretrained(checkpoint_path) -> SmolVLAModel
 SmolVLAModel.infer_action(image, state, instruction) -> ActionChunk
 ```
 
-**Interacts with:** mlx-vlm's existing weight-loading and vision/language
-encoding plumbing (reused, not reimplemented); `control-loop`'s ZeroMQ client,
-which is the only caller of `infer_action()` at runtime, through the fallback
-adapter.
+**Interacts with:** mlx-vlm's existing vision/language encoding plumbing
+(reused, not reimplemented) and its safetensors-reading primitives; weight
+*dispatch* is not reused, since a real checkpoint's
+[LeRobot-native config](CONTEXT.md#term-lerobot-native-checkpoint) does not
+carry mlx-vlm's `model_type`/nested-config shape — `from_pretrained()` reads
+it directly instead of routing through mlx-vlm's generic
+`get_model_and_args()` dispatch, keeping that shared path unmodified for
+every other model (see [ADR-0006](../../adr/0006-config-adapter-for-lerobot-checkpoint-shape.md#adr-0006)).
+`control-loop`'s ZeroMQ client is the only caller of `infer_action()` at
+runtime, through the fallback adapter.
 
 **Invariants held:** never implements `generate()`; state is compressed to
 exactly one token per SmolVLA's own architecture, matching the reference
