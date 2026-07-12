@@ -8,8 +8,9 @@ construction, not discovered after it.
 | Part                                                          | Status       | Why / pointer                                                                |
 | -------------------------------------------------------------- | ------------- | ------------------------------------------------------------------------------ |
 | SmolVLA config + model class (Python/mlx-vlm fork)              | captured      | [model-runtime](design/model-runtime/design.md), component 01.1               |
-| SmolVLA fine-tuning (action expert)                             | captured      | [model-runtime](design/model-runtime/design.md), component 01.3               |
-| Elixir-native SmolVLA forward pass (emily/Nx.Defn)              | captured      | [model-runtime](design/model-runtime/design.md), component 01.2, gated on `/prototype` |
+| SmolVLA fine-tuning, Python/LeRobot (action expert)              | captured      | [model-runtime](design/model-runtime/design.md), component 01.3               |
+| Elixir-native SmolVLA forward pass (emily/Nx.Defn)              | captured      | [model-runtime](design/model-runtime/design.md), component 01.2, mechanism prototype-verified |
+| Elixir-native fine-tuning (Nx/Axon)                             | captured      | [model-runtime](design/model-runtime/design.md), component 01.4, gated on task-performance parity |
 | ControlLoop GenServer + ActionQueue                             | captured      | [control-loop](design/control-loop/design.md), components 01.1–01.2           |
 | ZeroMQ client + Python-side fallback server                     | captured      | [control-loop](design/control-loop/design.md), component 01.3                 |
 | bb bot actuator/kinematics/safety logic                         | out-of-scope  | explicit no-goal — lives in a different system entirely, not designed here    |

@@ -35,5 +35,7 @@ The only component fine-tuning normally updates.
 ### Episode {#term-episode}
 
 One recorded demonstration — an observation/action sequence — in
-LeRobotDataset format, used as [FineTuneJob](design.md) input (component
-01.3). A value object.
+LeRobotDataset format, used as [FineTuneJob](design.md) input (components
+01.3, 01.4). A value object; its provenance (real robot usage or a simulation
+environment) never changes its shape or how a `FineTuneJob` adapter consumes
+it.

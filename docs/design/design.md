@@ -18,8 +18,12 @@ context indexes its own components below.
 :::goal
 **SmolVLA runs locally, no cloud dependency**
 
-Run SmolVLA inference on this Mac via MLX (Apple Silicon, Metal-accelerated),
-with no cloud or discrete-GPU dependency for either inference or fine-tuning.
+Run SmolVLA inference and fine-tuning on this Mac via MLX (Apple Silicon,
+Metal-accelerated), with no cloud or discrete-GPU dependency. The robot itself
+runs elsewhere — a Raspberry Pi, joining the same Elixir/BEAM cluster as a
+node ([control-loop](control-loop/design.md)) — with this Mac reached over
+the network as the `infer_action` and fine-tuning server; same-host operation
+stays legal but is never assumed.
 :::
 
 :::goal
@@ -32,12 +36,16 @@ class, weight loading against `model.safetensors.index.json`, tests — see
 :::
 
 :::goal
-**Local fine-tuning from robot episodes**
+**Fine-tune from real and simulated episodes, intended native**
 
 Fine-tune SmolVLA's action expert on this Mac against
-[LeRobotDataset](model-runtime/CONTEXT.md#term-episode)-format episodes,
-matching the paper's own frozen-VLM training path. See
-[model-runtime](model-runtime/design.md).
+[episodes](model-runtime/CONTEXT.md#term-episode) sourced from either real
+robot usage (the Pi, in production) or a simulation environment — the source
+never changes the fine-tuning contract. Elixir-native training (`Nx`/`Axon`)
+is the intended path, conditional on proven task-performance parity against
+the Python reference trainer; Python fine-tuning is the permanent fallback
+otherwise. See [model-runtime](model-runtime/design.md) and
+[ADR-0005](../adr/0005-elixir-native-finetuning-conditional-retirement.md#adr-0005).
 :::
 
 :::goal
@@ -71,6 +79,17 @@ scratch is out of scope.
 
 Fine-tuning runs on this one Mac; multi-node/distributed training is out of
 scope.
+:::
+
+:::no-goal
+**Not reinforcement learning, yet**
+
+Real and simulated data both feed [supervised
+fine-tuning](model-runtime/design.md) only — no reward-signal entity, no
+online/on-policy training loop, no acting-while-learning coupling to
+[control-loop](control-loop/design.md) is designed here. Revisit when a
+concrete RL approach is chosen; until then this stays an explicit exclusion,
+not a silent gap.
 :::
 
 :::no-goal
@@ -135,10 +154,9 @@ it is designed to be a mergeable PR on its own terms.
 
 :::pending {kind=build since=2026-07-12}
 Elixir-native SmolVLA forward pass via `emily`/`Nx.Defn`
-([control-loop](control-loop/design.md)) is designed but not built, gated on a
-`/prototype` answering: can SmolVLA's forward pass (SmolVLM2 backbone +
-flow-matching action expert) be expressed correctly and run fast enough
-against `emily`'s `Nx.Backend`? See
+([model-runtime](model-runtime/design.md), component 01.2) is designed but
+not built. A `/prototype` run de-risked the core mechanism; the full-scale
+port against real weights remains open. See
 [ADR-0003](../adr/0003-emily-native-primary-zeromq-fallback.md#adr-0003).
 :::
 
@@ -152,6 +170,14 @@ built. See [ADR-0001](../adr/0001-parallel-action-entry-point.md#adr-0001).
 The ZeroMQ-Python fallback adapter and the Elixir `ControlLoop`
 ([control-loop](control-loop/design.md)) are designed but not built. See
 [ADR-0002](../adr/0002-elixir-owns-the-control-loop.md#adr-0002).
+:::
+
+:::pending {kind=build since=2026-07-12}
+Elixir-native fine-tuning (`Nx`/`Axon`,
+[model-runtime](model-runtime/design.md)) is designed but not built, along
+with the task-performance-parity check that gates retiring Python
+fine-tuning. See
+[ADR-0005](../adr/0005-elixir-native-finetuning-conditional-retirement.md#adr-0005).
 :::
 
 ## 01 System at a glance

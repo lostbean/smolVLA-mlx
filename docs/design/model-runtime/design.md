@@ -1,6 +1,6 @@
 ---
 eyebrow: Context · model-runtime · [root](../design.md)
-lede: SmolVLA's forward pass, its weights, and the two adapters that expose it — a Python fork of mlx-vlm and an Elixir-native Nx.Defn port — behind one infer_action port.
+lede: SmolVLA's forward pass, its weights, and the adapter pairs that expose it — Python and Elixir-native, behind the infer_action port for inference and the FineTuneJob port for training.
 footer: This document owns the model-runtime components; CONTEXT owns the terms; ADRs own the rationale; the root indexes both contexts.
 ---
 
@@ -24,18 +24,32 @@ never through `generate()`. See
 :::
 
 :::goal
-**Fine-tune the action expert locally**
+**Fine-tune locally, from real or simulated episodes alike**
 
 Fine-tune SmolVLA's action expert (VLM backbone frozen, matching the paper's
-reference training path) against
-[episodes](CONTEXT.md#term-episode) on this Mac.
+reference training path) against [episodes](CONTEXT.md#term-episode) on this
+Mac, regardless of whether an episode came from real robot usage or a
+simulation environment — the fine-tuning contract never changes based on
+source.
+:::
+
+:::goal
+**Elixir-native fine-tuning, intended, conditional cutover**
+
+Fine-tuning follows the same ports-and-adapters shape as inference: one
+`FineTuneJob` contract, an Elixir-native (`Nx`/`Axon`) adapter as the intended
+target, and the Python (LeRobot-based) adapter as the reference and the
+permanent fallback if a task-performance-parity check never clears. See
+[ADR-0005](../../adr/0005-elixir-native-finetuning-conditional-retirement.md#adr-0005).
 :::
 
 :::no-goal
-**Not a second training framework**
+**Not a second training framework — for the Python adapter**
 
-Reuse LeRobot's dataset format and training conventions where possible; this
-context does not invent its own data format or training loop from scratch.
+The Python `FineTuneJob` adapter reuses LeRobot's dataset format and training
+conventions rather than inventing its own; the Elixir-native adapter
+necessarily reimplements the training loop (no shared code crosses the
+boundary, same as inference), but not the data format or recipe design.
 :::
 
 :::invariant {enforcement=convention}
@@ -98,11 +112,19 @@ weights, exposed to `control-loop` as the in-process adapter. Designed; the
 core mechanism is prototype-verified, the full-scale port is not yet built.
 See 01.2.
 
-### FineTuneJob `lens:state`
+### FineTuneJob (Python) `lens:state`
 
-**Own one fine-tuning run.** Takes a set of [episodes](CONTEXT.md#term-episode)
-and the frozen VLM backbone, produces updated action-expert weights,
-checkpointed for resumability. See 01.3.
+**Own one fine-tuning run, LeRobot-based.** Takes a set of
+[episodes](CONTEXT.md#term-episode) and the frozen VLM backbone, produces
+updated action-expert weights, checkpointed for resumability. The reference
+implementation and the permanent fallback. See 01.3.
+
+### FineTuneJob (Elixir-native) `lens:state`
+
+**Own the same fine-tuning contract, via `Nx`/`Axon`.** Identical
+episodes-in/weights-out contract as the Python adapter, training loop
+reimplemented against `Nx`'s autodiff and `Axon`'s training API. The intended
+target, conditional on task-performance parity. See 01.4.
 :::
 
 ### 01.1 SmolVLAModel (Python) — responsibility, interface, invariants
@@ -175,9 +197,10 @@ enough. **Not yet proven:** the full-scale port against SmolVLA's real
 trained weights rather than random ones — that remains the open work in the
 [pending ledger](../design.md).
 
-### 01.3 FineTuneJob — responsibility, interface, invariants
+### 01.3 FineTuneJob (Python) — responsibility, interface, invariants
 
-**Responsible for:** taking a set of [episodes](CONTEXT.md#term-episode) and
+**Responsible for:** taking a set of [episodes](CONTEXT.md#term-episode) —
+real-robot or simulation-sourced, indistinguishable to this contract — and
 producing updated action-expert weights, VLM backbone frozen (matching the
 paper's own reference training path); checkpointing so a run is resumable.
 
@@ -187,8 +210,9 @@ FineTuneJob.run(checkpoint_path, episodes, output_path) -> FineTuneJob  # identi
 FineTuneJob.resume(checkpoint_path) -> FineTuneJob
 ```
 
-**Interacts with:** LeRobotDataset-format episode data as input; produces
-safetensors weights consumed by both 01.1 and (once built) 01.2.
+**Interacts with:** LeRobotDataset-format episode data as input, regardless of
+whether the episodes originated on the real robot or a simulator; produces
+safetensors weights consumed by 01.1, 01.2, and (for the parity check) 01.4.
 
 **Invariants held:** the VLM backbone stays frozen for the default training
 path (matching the paper); training only the action expert is the default,
@@ -198,3 +222,39 @@ inconsistent between a run and its checkpoint.
 **Fails:** a job interrupted mid-run resumes from its last checkpoint, never
 silently restarts from scratch nor silently continues from a corrupt
 checkpoint (checksum or shape-validated on resume).
+
+**Role:** the reference implementation, and the permanent fallback if 01.4
+never clears its cutover gate — see
+[ADR-0005](../../adr/0005-elixir-native-finetuning-conditional-retirement.md#adr-0005).
+
+### 01.4 FineTuneJob (Elixir-native) — responsibility, interface, invariants
+
+**Responsible for:** the identical `episodes -> updated weights` contract as
+01.3, training loop expressed via `Nx`'s autodiff and `Axon`'s training API,
+action-expert-only gradient updates with the VLM backbone frozen, matching
+01.3's default training path.
+
+**Interface:**
+```elixir
+FineTuneJob.run(checkpoint_path, episodes, output_path) :: FineTuneJob.t()
+FineTuneJob.resume(checkpoint_path) :: FineTuneJob.t()
+```
+
+**Interacts with:** the same LeRobotDataset-format episodes as 01.3 (real or
+simulated, same non-distinction); produces safetensors weights consumed by
+01.1 and 01.2, identically to 01.3's output.
+
+**Invariants held:** same frozen-backbone default as 01.3; a training run's
+identity persists across resumption exactly as 01.3's does.
+
+**Fails:** same loud/local checkpoint-corruption handling as 01.3 — never a
+silent restart from scratch, never a silent continuation from a corrupt
+checkpoint.
+
+**Cutover gate:** promoted from "designed, not built" to the production
+default only once a task-performance-parity check — fine-tuning both 01.3 and
+01.4 on identical episodes, then comparing the resulting policies' task
+success rate on held-out evaluation episodes, never their loss curves — shows
+01.4 is not meaningfully worse. Until that gate clears, 01.3 remains the
+production trainer and 01.4 is the evaluated candidate. See
+[ADR-0005](../../adr/0005-elixir-native-finetuning-conditional-retirement.md#adr-0005).
