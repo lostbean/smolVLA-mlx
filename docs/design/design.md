@@ -89,12 +89,13 @@ latency bounds.
 :::
 
 :::no-goal
-**Not committing to the full Elixir-native port sight unseen**
+**Not committing to the full-scale port sight unseen**
 
-The emily-native adapter is the *intended* production path, but committing
-engineering time to the full forward-pass port waits on a `/prototype`
-answering feasibility and latency first. See the [pending
-entry](control-loop/design.md).
+A `/prototype` run (2026-07-12) de-risked the core mechanism — see
+[model-runtime](model-runtime/design.md), component 01.2 — confirming the
+emily-native adapter as the production path. Still not committed: the
+full-scale port against SmolVLA's real weights and full backbone size, which
+remains a pending build entry in that same document.
 :::
 
 :::invariant {enforcement=convention}

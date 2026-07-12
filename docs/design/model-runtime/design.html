@@ -1111,8 +1111,9 @@ LoRA/full fine-tuning of the action expert) is designed, not built. See
 <div class="entry"><div class="entry-head"><span class="badges"><span class="badge build">build</span> <span class="since">since 2026-07-12</span></span></div>
 <div class="body">
 <p>The Elixir-native <code>Nx.Defn</code> adapter (SmolVLA's forward pass reimplemented
-against <code>emily</code>'s <code>Nx.Backend</code>) is designed, not built, and gated on a
-<code>/prototype</code>. See
+against <code>emily</code>'s <code>Nx.Backend</code>) is designed, not built. A <code>/prototype</code> run on
+2026-07-12 de-risked the core mechanism (see 01.2); the full-scale port
+against real SmolVLA weights remains to be built. See
 <a href="../../adr/0003-emily-native-primary-zeromq-fallback.md#adr-0003">ADR-0003</a>.</p>
 </div>
 </div>
@@ -1133,8 +1134,9 @@ only output entry point. See 01.1.</p>
 <div class="body">
 <p><strong>Own the same forward pass, reimplemented against <code>emily</code>.</strong> <code>Nx.Defn</code>
 functions calling <code>emily</code>'s <code>Nx.Backend</code>, loading the same safetensors
-weights, exposed to <code>control-loop</code> as the in-process adapter. Designed;
-existence gated on a <code>/prototype</code>. See 01.2.</p>
+weights, exposed to <code>control-loop</code> as the in-process adapter. Designed; the
+core mechanism is prototype-verified, the full-scale port is not yet built.
+See 01.2.</p>
 </div>
 </article>
 <article class="card" id="finetunejob-lens-state">
@@ -1186,12 +1188,21 @@ on fixed inputs is the intended mechanism once built, not yet a script).</p>
 <p><strong>Fails:</strong> same loud/local failure shape as 01.1 — a shape or dimensionality
 mismatch raises before dispatching to <code>emily</code>, never silently reshapes or
 truncates.</p>
-<p><strong>Existence gated on:</strong> a <code>/prototype</code> answering whether SmolVLA's forward
-pass — specifically the flow-matching action expert's interleaved
-cross/self-attention, conditioned on an intermediate VLM layer — is expressible
-in <code>Nx.Defn</code> against <code>emily</code>'s current op coverage, and fast enough for a
-5–30Hz tick. Until that prototype clears, this component is designed, not
-built (see the pending updates above).</p>
+<p><strong>De-risked by prototype (2026-07-12):</strong> a scaled-down but architecturally
+faithful stand-in — a multi-layer self-attention backbone plus a flow-matching
+action expert doing self-attention, cross-attention into a frozen intermediate
+backbone layer, and multi-step Euler integration — was implemented twice from
+identical fixed random weights: once in NumPy (the oracle), once in <code>Nx.Defn</code>
+against <code>emily</code>'s <code>Nx.Backend</code>. Result: numerical parity to 2.96×10⁻⁹ max
+absolute difference (float32 rounding noise) against a 1×10⁻³ tolerance bar,
+and 5.26ms p50 latency (N=50) against a 100ms budget — roughly 19× headroom
+even against the strict 33ms/30Hz-every-tick bar. This confirms the mechanism
+— cross-attention into a frozen intermediate layer, the iterative
+flow-matching structure, and <code>emily</code>'s op coverage — is expressible and fast
+enough. <strong>Not yet proven:</strong> the full-scale port against SmolVLA's real
+~450M-parameter backbone and ~100M-parameter action expert, and against real
+trained weights rather than random ones — that remains the open work in the
+<a href="../design.html">pending ledger</a>.</p>
 <h3 id="01-3-finetunejob-responsibility-interface-invariants">01.3 FineTuneJob — responsibility, interface, invariants</h3>
 <p><strong>Responsible for:</strong> taking a set of <a href="CONTEXT.md#term-episode">episodes</a> and
 producing updated action-expert weights, VLM backbone frozen (matching the

@@ -73,8 +73,9 @@ LoRA/full fine-tuning of the action expert) is designed, not built. See
 
 :::pending {kind=build since=2026-07-12}
 The Elixir-native `Nx.Defn` adapter (SmolVLA's forward pass reimplemented
-against `emily`'s `Nx.Backend`) is designed, not built, and gated on a
-`/prototype`. See
+against `emily`'s `Nx.Backend`) is designed, not built. A `/prototype` run on
+2026-07-12 de-risked the core mechanism (see 01.2); the full-scale port
+against real SmolVLA weights remains to be built. See
 [ADR-0003](../../adr/0003-emily-native-primary-zeromq-fallback.md#adr-0003).
 :::
 
@@ -93,8 +94,9 @@ only output entry point. See 01.1.
 
 **Own the same forward pass, reimplemented against `emily`.** `Nx.Defn`
 functions calling `emily`'s `Nx.Backend`, loading the same safetensors
-weights, exposed to `control-loop` as the in-process adapter. Designed;
-existence gated on a `/prototype`. See 01.2.
+weights, exposed to `control-loop` as the in-process adapter. Designed; the
+core mechanism is prototype-verified, the full-scale port is not yet built.
+See 01.2.
 
 ### FineTuneJob `lens:state`
 
@@ -157,12 +159,21 @@ on fixed inputs is the intended mechanism once built, not yet a script).
 mismatch raises before dispatching to `emily`, never silently reshapes or
 truncates.
 
-**Existence gated on:** a `/prototype` answering whether SmolVLA's forward
-pass — specifically the flow-matching action expert's interleaved
-cross/self-attention, conditioned on an intermediate VLM layer — is expressible
-in `Nx.Defn` against `emily`'s current op coverage, and fast enough for a
-5–30Hz tick. Until that prototype clears, this component is designed, not
-built (see the pending updates above).
+**De-risked by prototype (2026-07-12):** a scaled-down but architecturally
+faithful stand-in — a multi-layer self-attention backbone plus a flow-matching
+action expert doing self-attention, cross-attention into a frozen intermediate
+backbone layer, and multi-step Euler integration — was implemented twice from
+identical fixed random weights: once in NumPy (the oracle), once in `Nx.Defn`
+against `emily`'s `Nx.Backend`. Result: numerical parity to 2.96×10⁻⁹ max
+absolute difference (float32 rounding noise) against a 1×10⁻³ tolerance bar,
+and 5.26ms p50 latency (N=50) against a 100ms budget — roughly 19× headroom
+even against the strict 33ms/30Hz-every-tick bar. This confirms the mechanism
+— cross-attention into a frozen intermediate layer, the iterative
+flow-matching structure, and `emily`'s op coverage — is expressible and fast
+enough. **Not yet proven:** the full-scale port against SmolVLA's real
+~450M-parameter backbone and ~100M-parameter action expert, and against real
+trained weights rather than random ones — that remains the open work in the
+[pending ledger](../design.md).
 
 ### 01.3 FineTuneJob — responsibility, interface, invariants
 
