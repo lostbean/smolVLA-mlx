@@ -97,9 +97,13 @@ separate follow-up, not blocking anything else in this ledger. See
 :::pending {kind=build since=2026-07-13}
 Both Elixir-native adapters are built: the forward pass (component 01.2,
 inference) conformance-checked at 0.65% mean relative error against the
-Python implementation — its warm latency (~1.2s) is ~12× over the 100ms
-budget, because the port dispatches per-layer rather than as one traced
-whole-model `defn` graph, the remaining open work for that adapter — and
+Python implementation — its warm latency (~1.6s) has real headroom (~3×)
+against the actual async-tick-triggered deadline (~5s at this system's own
+5Hz-class target and a 25-action low-water threshold — see 01.2's own
+latency note for the derivation), but dispatches per-layer rather than as
+one traced whole-model `defn` graph, eroding that headroom fast at a
+tighter tick rate or threshold — the remaining open work for that adapter —
+and
 fine-tuning (component 01.4, `Nx.Defn.value_and_grad` plus `Polaris`) — a
 real training run reloads through both inference adapters with structurally
 identical safetensors output to the Python trainer's. **Judged
@@ -246,13 +250,25 @@ Python implementation (component 01.1) rather than a NumPy oracle —
 observation, well inside the 2% budget the errors' own bf16-drift character
 justifies (see this component's test suite for the full reasoning). This
 confirms the mechanism holds at real scale, not just the prototype's stand-in.
-**Not yet resolved:** measured warm latency is ~1.2s against the 100ms
-budget — roughly 12× over, not the prototype's 19×-under-budget headroom.
-Root cause: the port dispatches each layer/op as its own `Emily.Fast`/
-`Nx.Defn` call from Elixir orchestration rather than one whole-model traced
-`defn` graph, so `Emily.Compiler`'s single-NIF whole-graph replay speedup
-never applies. Closing this gap — restructuring the forward pass into one
-traced graph — is the next open work; see the [pending ledger](../design.md).
+**Not yet resolved:** measured warm latency is ~1.6s (a more recent
+measurement refines the earlier ~1.2s figure). The real deadline this must
+clear is not a flat 100ms per call — `ControlLoop` (01.1) fires
+`infer_action` asynchronously via a `Task`, never blocking the tick loop, so
+the actual constraint is *time to complete before the
+[queue](../control-loop/CONTEXT.md#term-action-queue) drains from the
+[low-water threshold](../control-loop/CONTEXT.md#term-low-water-threshold)
+to empty* — at this system's own 5Hz-class target tick rate and a
+25-action threshold (half the 50-action chunk size), that budget is ~5s,
+not 100ms.
+Measured against that real bar, ~1.6s has real headroom (~3×), though it
+erodes fast at a faster tick rate or a lower threshold. Root cause of the
+slowness itself: the port dispatches each layer/op as its own
+`Emily.Fast`/`Nx.Defn` call from Elixir orchestration rather than one
+whole-model traced `defn` graph, so `Emily.Compiler`'s single-NIF
+whole-graph replay speedup never applies — worth closing regardless of the
+real deadline's slack, since it directly trades against how aggressive a
+tick rate or threshold this system can later choose. See the [pending
+ledger](../design.md).
 
 ### 01.3 FineTuneJob (Python) — responsibility, interface, invariants
 
