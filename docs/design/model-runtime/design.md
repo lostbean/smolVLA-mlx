@@ -37,9 +37,10 @@ source.
 **Elixir-native fine-tuning, intended, conditional cutover**
 
 Fine-tuning follows the same ports-and-adapters shape as inference: one
-`FineTuneJob` contract, an Elixir-native (`Nx`/`Axon`) adapter as the intended
-target, and the Python (LeRobot-based) adapter as the reference and the
-permanent fallback if a task-performance-parity check never clears. See
+`FineTuneJob` contract, an Elixir-native (`Nx.Defn` autodiff plus `Polaris`
+for optimization) adapter as the intended target, and the Python
+(LeRobot-based) adapter as the reference and the permanent fallback if a
+task-performance-parity check never clears. See
 [ADR-0005](../../adr/0005-elixir-native-finetuning-conditional-retirement.md#adr-0005).
 :::
 
@@ -83,20 +84,28 @@ every model's output is a token sequence.
 
 ## Pending updates
 
-:::pending {kind=build since=2026-07-12}
-The mlx-vlm fork itself (config class, model class, `infer_action()`,
-LoRA/full fine-tuning of the action expert) is designed, not built. See
+:::pending {kind=build since=2026-07-13}
+The mlx-vlm fork (config class, model class, `infer_action()`, and Python
+fine-tuning via LeRobot's own `lerobot-train`, component 01.3) is built. A
+real fine-tuning run against real episodes reloads through `infer_action()`
+producing a finite, correctly-shaped action chunk. LoRA (as opposed to the
+current full-parameter action-expert training) remains unbuilt — a smaller,
+separate follow-up, not blocking anything else in this ledger. See
 [ADR-0001](../../adr/0001-parallel-action-entry-point.md#adr-0001).
 :::
 
 :::pending {kind=build since=2026-07-13}
-The Elixir-native `Nx.Defn` adapter's forward pass (SmolVLA's inference,
-component 01.2) is built and conformance-checked against real weights —
-0.65% mean relative error against the Python implementation. Its warm
-latency (~1.2s) is ~12× over the 100ms budget, because the port dispatches
-per-layer rather than as one traced whole-model `defn` graph; closing this
-gap is the remaining open work for this adapter. Elixir-native fine-tuning
-(component 01.4) is untouched and separately pending. See
+Both Elixir-native adapters are built: the forward pass (component 01.2,
+inference) conformance-checked at 0.65% mean relative error against the
+Python implementation — its warm latency (~1.2s) is ~12× over the 100ms
+budget, because the port dispatches per-layer rather than as one traced
+whole-model `defn` graph, the remaining open work for that adapter — and
+fine-tuning (component 01.4, `Nx.Defn.value_and_grad` plus `Polaris`) — a
+real training run reloads through both inference adapters with structurally
+identical safetensors output to the Python trainer's. **Not yet judged:**
+the task-performance-parity gate between the two trainers (component 01.4's
+own cutover gate) has not run — 01.4 stays an evaluated candidate, not the
+production trainer, until it does. See
 [ADR-0003](../../adr/0003-emily-native-primary-zeromq-fallback.md#adr-0003).
 :::
 
@@ -128,9 +137,10 @@ implementation and the permanent fallback. See 01.3.
 
 ### FineTuneJob (Elixir-native) `lens:state`
 
-**Own the same fine-tuning contract, via `Nx`/`Axon`.** Identical
-episodes-in/weights-out contract as the Python adapter, training loop
-reimplemented against `Nx`'s autodiff and `Axon`'s training API. The intended
+**Own the same fine-tuning contract, via `Nx.Defn` autodiff and `Polaris`.**
+Identical episodes-in/weights-out contract as the Python adapter, training
+loop reimplemented against `Nx.Defn.value_and_grad` directly on 01.2's
+hand-written forward pass, with `Polaris` for the optimizer. The intended
 target, conditional on task-performance parity. See 01.4.
 :::
 
@@ -258,9 +268,13 @@ never clears its cutover gate — see
 ### 01.4 FineTuneJob (Elixir-native) — responsibility, interface, invariants
 
 **Responsible for:** the identical `episodes -> updated weights` contract as
-01.3, training loop expressed via `Nx`'s autodiff and `Axon`'s training API,
-action-expert-only gradient updates with the VLM backbone frozen, matching
-01.3's default training path.
+01.3, training loop expressed via `Nx.Defn.value_and_grad` directly against
+01.2's already-hand-written forward pass — not `Axon`'s graph-building DSL,
+which does not fit a model built as plain `Nx.Defn` functions — with
+`Polaris` (Axon's optimizer implementations, usable standalone) providing
+the Adam update step. Action-expert-only gradient updates with the VLM
+backbone frozen (via differentiating only the trainable parameter subset),
+matching 01.3's default training path.
 
 **Interface:**
 ```elixir
@@ -269,7 +283,12 @@ FineTuneJob.resume(checkpoint_path) :: FineTuneJob.t()
 ```
 
 **Interacts with:** the same LeRobotDataset-format episodes as 01.3 (real or
-simulated, same non-distinction); produces safetensors weights consumed by
+simulated, same non-distinction), decoded via a shell-out to the system's
+`ffmpeg` binary for raw video-frame extraction — a generic media-format
+reader, not model or training logic, so it sits outside
+[ADR-0004](../../adr/0004-weights-only-cross-runtime-sharing.md#adr-0004)'s
+"no code crosses the boundary" scope the same way `Safetensors`/`Explorer`
+already do for their own formats. Produces safetensors weights consumed by
 01.1 and 01.2, identically to 01.3's output.
 
 **Invariants held:** same frozen-backbone default as 01.3; a training run's
