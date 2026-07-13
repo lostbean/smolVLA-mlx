@@ -1,0 +1,4 @@
+%{
+  "chumak": {:hex, :chumak, "1.5.0", "8fa5aae063178f9914edf6feb5c3eeff5cdcf33a1c6b55effe917ffff2b1650b", [:rebar3], [], "hexpm", "ea8c767dd9c72046126003fa1141a934c33af478ad2bfb4f06ebc67ae6a21eb8"},
+  "msgpax": {:hex, :msgpax, "2.4.0", "4647575c87cb0c43b93266438242c21f71f196cafa268f45f91498541148c15d", [:mix], [{:plug, "~> 1.0", [hex: :plug, repo: "hexpm", optional: true]}], "hexpm", "ca933891b0e7075701a17507c61642bf6e0407bb244040d5d0a58597a06369d2"},
+}

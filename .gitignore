@@ -6,3 +6,12 @@
 .venv
 __pycache__/
 .pytest_cache/
+
+# Elixir (control-loop)
+/_build/
+/cover/
+/deps/
+/doc/
+/.elixir_ls/
+erl_crash.dump
+*.ez
