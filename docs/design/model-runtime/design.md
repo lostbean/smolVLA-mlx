@@ -163,8 +163,10 @@ implementation's shape.
 
 **Fails:** a malformed or missing checkpoint raises at `from_pretrained()` —
 loud and local, never a silent zero-initialized fallback; an
-`infer_action()` call with a wrong action-space dimensionality (mismatched
-against the loaded config) raises before running the forward pass.
+`infer_action()` call whose state vector *exceeds* the loaded config's
+`max_state_dim` raises before running the forward pass — a shorter state is
+valid and zero-padded to the checkpoint's full width, never a silent
+truncation of an oversized one.
 
 ### 01.2 SmolVLAModel (Elixir-native) — responsibility, interface, invariants
 

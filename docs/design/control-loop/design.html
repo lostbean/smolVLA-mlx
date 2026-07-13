@@ -1235,9 +1235,12 @@ Response (map), exactly one of:
   ok:     {action_chunk: array of array of float32}  # shape (chunk_size, action_dim)
   error:  {message: string}                          # malformed request or inference failure
 </code></pre>
-<p>A request whose <code>state</code> length mismatches the loaded checkpoint's declared
-action-space dimensionality is rejected with the <code>error</code> shape before any
-inference runs — the same fail-loud-before-forward-pass invariant component
+<p>A request whose <code>state</code> length <em>exceeds</em> the loaded checkpoint's declared
+<code>max_state_dim</code> is rejected with the <code>error</code> shape before any inference
+runs — a shorter state is valid and is zero-padded internally, matching
+<a href="../model-runtime/design.html">model-runtime</a> component 01.1's own
+<code>infer_action</code> behavior exactly, so the two fail-loud checks never diverge.
+This is the same fail-loud-before-forward-pass invariant component
 01.1 holds, carried across the network seam rather than silently coerced.</p>
 <footer class="colophon">This document owns the control-loop components; CONTEXT owns the terms; ADRs own the rationale; the root indexes both contexts.</footer>
 <script src="https://cdn.jsdelivr.net/npm/mermaid@11.6.0/dist/mermaid.min.js"></script>

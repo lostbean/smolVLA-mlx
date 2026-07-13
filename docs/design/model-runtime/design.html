@@ -1202,8 +1202,10 @@ exactly one token per SmolVLA's own architecture, matching the reference
 implementation's shape.</p>
 <p><strong>Fails:</strong> a malformed or missing checkpoint raises at <code>from_pretrained()</code> —
 loud and local, never a silent zero-initialized fallback; an
-<code>infer_action()</code> call with a wrong action-space dimensionality (mismatched
-against the loaded config) raises before running the forward pass.</p>
+<code>infer_action()</code> call whose state vector <em>exceeds</em> the loaded config's
+<code>max_state_dim</code> raises before running the forward pass — a shorter state is
+valid and zero-padded to the checkpoint's full width, never a silent
+truncation of an oversized one.</p>
 <h3 id="01-2-smolvlamodel-elixir-native-responsibility-interface-invariants">01.2 SmolVLAModel (Elixir-native) — responsibility, interface, invariants</h3>
 <p><strong>Responsible for:</strong> the identical <code>Observation -&gt; ActionChunk</code> transformation
 as 01.1, expressed as <code>Nx.Defn</code> numerical functions executing in-process

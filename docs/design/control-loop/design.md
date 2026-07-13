@@ -219,7 +219,10 @@ Response (map), exactly one of:
   error:  {message: string}                          # malformed request or inference failure
 ```
 
-A request whose `state` length mismatches the loaded checkpoint's declared
-action-space dimensionality is rejected with the `error` shape before any
-inference runs — the same fail-loud-before-forward-pass invariant component
+A request whose `state` length *exceeds* the loaded checkpoint's declared
+`max_state_dim` is rejected with the `error` shape before any inference
+runs — a shorter state is valid and is zero-padded internally, matching
+[model-runtime](../model-runtime/design.md) component 01.1's own
+`infer_action` behavior exactly, so the two fail-loud checks never diverge.
+This is the same fail-loud-before-forward-pass invariant component
 01.1 holds, carried across the network seam rather than silently coerced.
