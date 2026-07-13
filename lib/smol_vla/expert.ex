@@ -57,11 +57,33 @@ defmodule SmolVLA.Expert do
   def sinusoidal_pos_embedding(time, dimension, min_period, max_period)
       when rem(dimension, 2) == 0 do
     half = div(dimension, 2)
-    fraction = Nx.linspace(0.0, 1.0, n: half, type: :f32) |> Nx.backend_transfer(Emily.Backend)
-    sinusoidal_pos_embedding_kernel(time, fraction, min_period, max_period)
+    sinusoidal_pos_embedding_kernel(time, min_period, max_period, half: half)
   end
 
-  defnp sinusoidal_pos_embedding_kernel(time, fraction, min_period, max_period) do
+  # `half` (the geometric sweep's element count -- a plain Elixir integer,
+  # never itself a tensor) is passed as a `defn` OPTION (`half: half`),
+  # not a positional tensor argument -- `deftransformp fraction_of/1`
+  # below builds `Nx.linspace(..., n: half)` purely at trace-construction
+  # time via `Nx.Defn`'s documented "invoking custom Elixir code" escape
+  # hatch, so `half` is never lifted into a traced `Nx.Defn.Expr` (which
+  # `Nx.linspace/2`'s `n:` option cannot accept -- it needs a real integer;
+  # confirmed directly: passing `half` as an ordinary positional `defn`
+  # argument makes `Nx.Defn` trace-lift it into a scalar `Nx.Defn.Expr`,
+  # and `Nx.linspace(n: <traced expr>)` then raises). This also fixes a
+  # SEPARATE issue a prior version of this function had: eagerly
+  # `Nx.backend_transfer`-ing `fraction` before passing it in, which broke
+  # under `Nx.Defn.value_and_grad` (`SmolVLA.Train.loss/3` calls
+  # `SmolVLA.embed_suffix/4`, which calls this, from inside a traced
+  # gradient computation, where `backend_transfer` on an already-symbolic
+  # value raises) -- building `fraction` freshly inside the trace (via
+  # `deftransformp`, still real Elixir/Nx code, just invoked while the
+  # kernel below is being traced) sidesteps both problems at once.
+  deftransformp fraction_of(half) do
+    Nx.linspace(0.0, 1.0, n: half, type: :f32)
+  end
+
+  defnp sinusoidal_pos_embedding_kernel(time, min_period, max_period, opts \\ []) do
+    fraction = fraction_of(opts[:half])
     period = min_period * Nx.pow(max_period / min_period, fraction)
     scaling_factor = 1.0 / period * 2 * 3.141592653589793
 

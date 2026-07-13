@@ -33,6 +33,31 @@ defmodule SmolVLA.Weights do
   """
   @spec load!(Path.t()) :: %{String.t() => Nx.Tensor.t()}
   def load!(path) do
+    {weights, _raw_key_map} = load_with_raw_keys!(path)
+    weights
+  end
+
+  @doc """
+  Like `load!/1`, but also returns the `remapped_key -> raw_checkpoint_key`
+  map `remap/2` computes along the way -- lets a caller that needs to
+  write an UPDATED checkpoint back out (`FineTuneJob`, component 01.4)
+  substitute new tensor values back under the checkpoint's own original
+  `model.vlm_with_expert.*` naming, so the written file is structurally
+  identical (same keys, same shapes) to what a real published SmolVLA
+  checkpoint -- and the Python trainer's own safetensors output -- already
+  has, rather than inventing a divergent output key scheme.
+
+  The `lm_head` tensor `remap/2` intentionally drops (never read by
+  `infer_action/4`, see `remap_rest/2`'s own comment) is NOT present in
+  either returned map -- a caller writing a full checkpoint back out that
+  wants byte-for-byte structural parity with the ORIGINAL file (including
+  the unused `lm_head`) must read it separately; `FineTuneJob` does this
+  (see its own moduledoc) since "same safetensors shape as the Python
+  trainer's output" is this chunk's own acceptance bar.
+  """
+  @spec load_with_raw_keys!(Path.t()) ::
+          {%{String.t() => Nx.Tensor.t()}, %{String.t() => String.t()}}
+  def load_with_raw_keys!(path) do
     unless File.exists?(path) do
       raise File.Error,
         reason: :enoent,
@@ -46,9 +71,20 @@ defmodule SmolVLA.Weights do
       raise ArgumentError, "model.safetensors at #{path} contains no tensors"
     end
 
-    raw
-    |> Enum.flat_map(fn {key, tensor} -> remap(key, tensor) end)
-    |> Map.new(fn {key, tensor} -> {key, Nx.backend_transfer(tensor, Emily.Backend)} end)
+    remapped_entries =
+      Enum.flat_map(raw, fn {raw_key, tensor} ->
+        remap(raw_key, tensor) |> Enum.map(fn {new_key, value} -> {new_key, raw_key, value} end)
+      end)
+
+    weights =
+      Map.new(remapped_entries, fn {new_key, _raw_key, value} ->
+        {new_key, Nx.backend_transfer(value, Emily.Backend)}
+      end)
+
+    raw_key_map =
+      Map.new(remapped_entries, fn {new_key, raw_key, _value} -> {new_key, raw_key} end)
+
+    {weights, raw_key_map}
   end
 
   @doc """

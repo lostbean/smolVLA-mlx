@@ -220,7 +220,15 @@ defmodule SmolVLA do
     {images, image_masks} = prepare_images(model.config, image)
 
     {prefix_embeds, prefix_pad_mask, prefix_att_mask} =
-      embed_prefix(model, images, image_masks, instruction, padded_state)
+      embed_prefix(
+        model.weights,
+        model.config,
+        model.tokenizer,
+        images,
+        image_masks,
+        instruction,
+        padded_state
+      )
 
     noise_shape = {1, model.config.chunk_size, model.config.max_action_dim}
 
@@ -235,7 +243,15 @@ defmodule SmolVLA do
           supplied |> Nx.as_type(:f32) |> Nx.backend_transfer(Emily.Backend)
       end
 
-    x_t = sample_actions(model, prefix_embeds, prefix_pad_mask, prefix_att_mask, noise)
+    x_t =
+      sample_actions(
+        model.weights,
+        model.config,
+        prefix_embeds,
+        prefix_pad_mask,
+        prefix_att_mask,
+        noise
+      )
 
     action_dim = Config.action_dim(model.config)
     x_t |> Nx.slice_along_axis(0, action_dim, axis: 2) |> Nx.squeeze(axes: [0])
@@ -245,14 +261,37 @@ defmodule SmolVLA do
   # Prefix: images + language + state.
   # ------------------------------------------------------------------
 
-  defp embed_prefix(model, images, image_masks, instruction, padded_state) do
-    hidden_size = model.config.text.hidden_size
+  @doc false
+  # Public (not `defp`) so `FineTuneJob`'s batch-building can call it
+  # directly to precompute each training sample's prefix embedding OUTSIDE
+  # the differentiable region (the prefix never depends on the sampled
+  # flow-matching timestep -- see `SmolVLA.Train.loss/3`'s own moduledoc).
+  # `weights`/`config` (rather than the whole `%SmolVLA{}` struct) are
+  # threaded explicitly so this function is directly reusable there --
+  # `Nx.Defn.value_and_grad` needs a weights map it can substitute a
+  # traced/symbolic pytree into, which it cannot do by reaching into a
+  # `%SmolVLA{}` struct's `:weights` field the way `infer_action/4`'s own
+  # callers do. `tokenizer` stays a separate arg (not part of the
+  # differentiable region -- tokenization runs once, outside
+  # `value_and_grad`, exactly as `infer_action/4`'s own call site below
+  # tokenizes before entering any traced code).
+  @spec embed_prefix(
+          map(),
+          Config.t(),
+          Tokenizers.Tokenizer.t(),
+          [Nx.Tensor.t()],
+          [boolean()],
+          String.t(),
+          Nx.Tensor.t()
+        ) :: {Nx.Tensor.t(), Nx.Tensor.t(), Nx.Tensor.t()}
+  def embed_prefix(weights, config, tokenizer, images, image_masks, instruction, padded_state) do
+    hidden_size = config.text.hidden_size
     scale = :math.sqrt(hidden_size)
 
     {embeds_list, att_mask_values, pad_mask_values} =
       Enum.zip(images, image_masks)
       |> Enum.reduce({[], [], []}, fn {image, is_real}, {embeds, att_vals, pad_vals} ->
-        img_emb = Vision.forward(model.weights, model.config, image)
+        img_emb = Vision.forward(weights, config, image)
         img_emb = Nx.multiply(img_emb, scale)
         num_tokens = Nx.axis_size(img_emb, 1)
 
@@ -263,17 +302,17 @@ defmodule SmolVLA do
         }
       end)
 
-    token_ids = Tokenizer.encode!(model.tokenizer, instruction)
+    token_ids = Tokenizer.encode!(tokenizer, instruction)
     lang_ids = Nx.tensor([token_ids], type: :s64) |> Nx.backend_transfer(Emily.Backend)
-    lang_emb = embedding_lookup(model.weights["text_embed_tokens.weight"], lang_ids)
+    lang_emb = embedding_lookup(weights["text_embed_tokens.weight"], lang_ids)
     lang_emb = Nx.multiply(lang_emb, scale)
 
     att_mask_values = att_mask_values ++ List.duplicate(0, length(token_ids))
     pad_mask_values = pad_mask_values ++ List.duplicate(true, length(token_ids))
 
     state_emb =
-      linear_no_bias(padded_state, model.weights["state_proj.weight"])
-      |> Nx.add(model.weights["state_proj.bias"])
+      linear_no_bias(padded_state, weights["state_proj.weight"])
+      |> Nx.add(weights["state_proj.bias"])
       |> Nx.new_axis(1)
 
     att_mask_values = att_mask_values ++ [1]
@@ -307,19 +346,28 @@ defmodule SmolVLA do
   # Suffix: noisy action + flow-matching timestep.
   # ------------------------------------------------------------------
 
-  defp embed_suffix(model, noisy_actions, timestep) do
-    expert_hidden_size = Config.expert_hidden_size(model.config)
+  @doc false
+  # Public (not `defp`) so `SmolVLA.Train`'s differentiable single-timestep
+  # flow-matching loss can call it directly with a (possibly symbolic,
+  # traced) `weights` map -- see the module doc's note on threading
+  # `weights`/`config` explicitly rather than through the `%SmolVLA{}`
+  # struct, which only `infer_action/4`'s own multi-step Euler loop
+  # (`sample_actions/6` below) needs at inference time.
+  @spec embed_suffix(map(), Config.t(), Nx.Tensor.t(), Nx.Tensor.t()) ::
+          {Nx.Tensor.t(), Nx.Tensor.t(), Nx.Tensor.t()}
+  def embed_suffix(weights, config, noisy_actions, timestep) do
+    expert_hidden_size = Config.expert_hidden_size(config)
 
     action_emb =
-      linear_no_bias(noisy_actions, model.weights["action_in_proj.weight"])
-      |> Nx.add(model.weights["action_in_proj.bias"])
+      linear_no_bias(noisy_actions, weights["action_in_proj.weight"])
+      |> Nx.add(weights["action_in_proj.bias"])
 
     time_emb =
       Expert.sinusoidal_pos_embedding(
         timestep,
         expert_hidden_size,
-        model.config.min_period,
-        model.config.max_period
+        config.min_period,
+        config.max_period
       )
 
     time_emb =
@@ -330,20 +378,28 @@ defmodule SmolVLA do
     action_time_emb = Nx.concatenate([action_emb, time_emb], axis: 2)
 
     action_time_emb =
-      linear_no_bias(action_time_emb, model.weights["action_time_mlp_in.weight"])
-      |> Nx.add(model.weights["action_time_mlp_in.bias"])
+      linear_no_bias(action_time_emb, weights["action_time_mlp_in.weight"])
+      |> Nx.add(weights["action_time_mlp_in.bias"])
       |> silu()
 
     action_time_emb =
-      linear_no_bias(action_time_emb, model.weights["action_time_mlp_out.weight"])
-      |> Nx.add(model.weights["action_time_mlp_out.bias"])
+      linear_no_bias(action_time_emb, weights["action_time_mlp_out.weight"])
+      |> Nx.add(weights["action_time_mlp_out.bias"])
 
+    batch = Nx.axis_size(action_time_emb, 0)
     chunk_size = Nx.axis_size(action_time_emb, 1)
 
+    # Batch size tracks `action_time_emb`'s own leading dim rather than a
+    # hardcoded `1` -- `infer_action/4`'s own call site always passes
+    # batch=1 (unaffected, behavior-preserving), but `SmolVLA.Train.loss/3`
+    # calls this with a real training batch (batch>1), which a hardcoded
+    # `1` here would silently break (a shape-mismatch on `Nx.concatenate`
+    # against the batched prefix mask, not caught until concatenation --
+    # confirmed directly while building the training path).
     pad_mask =
-      Nx.broadcast(1, {1, chunk_size}) |> Nx.as_type(:u8) |> Nx.not_equal(0)
+      Nx.broadcast(1, {batch, chunk_size}) |> Nx.as_type(:u8) |> Nx.not_equal(0)
 
-    att_mask = Nx.broadcast(1, {1, chunk_size}) |> Nx.as_type(:s32)
+    att_mask = Nx.broadcast(1, {batch, chunk_size}) |> Nx.as_type(:s32)
 
     {action_time_emb, pad_mask, att_mask}
   end
@@ -352,8 +408,8 @@ defmodule SmolVLA do
   # Flow matching: Euler integration from pure noise to a clean action.
   # ------------------------------------------------------------------
 
-  defp sample_actions(model, prefix_embeds, prefix_pad_mask, prefix_att_mask, noise) do
-    num_steps = model.config.num_steps
+  defp sample_actions(weights, config, prefix_embeds, prefix_pad_mask, prefix_att_mask, noise) do
+    num_steps = config.num_steps
     dt = -1.0 / num_steps
 
     Enum.reduce(0..(num_steps - 1), noise, fn step, x_t ->
@@ -363,15 +419,15 @@ defmodule SmolVLA do
       x_t_bf16 = Nx.as_type(x_t, :bf16)
 
       {suffix_embeds, suffix_pad_mask, suffix_att_mask} =
-        embed_suffix(model, x_t_bf16, timestep)
+        embed_suffix(weights, config, x_t_bf16, timestep)
 
       pad_mask = Nx.concatenate([prefix_pad_mask, suffix_pad_mask], axis: 1)
       att_mask = Nx.concatenate([prefix_att_mask, suffix_att_mask], axis: 1)
 
       {_backbone_out, expert_out} =
         Expert.forward(
-          model.weights,
-          model.config,
+          weights,
+          config,
           prefix_embeds,
           suffix_embeds,
           pad_mask,
@@ -379,8 +435,8 @@ defmodule SmolVLA do
         )
 
       v_t =
-        linear_no_bias(Nx.as_type(expert_out, :f32), model.weights["action_out_proj.weight"])
-        |> Nx.add(model.weights["action_out_proj.bias"])
+        linear_no_bias(Nx.as_type(expert_out, :f32), weights["action_out_proj.weight"])
+        |> Nx.add(weights["action_out_proj.bias"])
 
       Nx.add(x_t, Nx.multiply(dt, v_t))
     end)
@@ -390,7 +446,14 @@ defmodule SmolVLA do
   # Image preparation: resize/pad/range-normalize + multi-camera padding.
   # ------------------------------------------------------------------
 
-  defp prepare_images(config, image) do
+  @doc false
+  # Public (not `defp`) so `FineTuneJob`'s batch-building can reuse the
+  # exact same resize/pad/range-normalize/multi-camera-padding logic
+  # `infer_action/4` itself uses, rather than duplicating it -- keeps a
+  # training sample's image preprocessing pixel-identical to an inference
+  # call's own preprocessing on the same raw image.
+  @spec prepare_images(Config.t(), Nx.Tensor.t() | [[number()]]) :: {[Nx.Tensor.t()], [boolean()]}
+  def prepare_images(config, image) do
     image_size = config.vision.image_size
 
     arr = to_hwc_f32(image)

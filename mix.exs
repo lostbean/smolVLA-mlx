@@ -46,7 +46,18 @@ defmodule ControlLoop.MixProject do
       # tokenizer artifact independently on each side, exactly like both
       # sides independently read model.safetensors -- no Python code or
       # process crosses the boundary.
-      {:tokenizers, "~> 0.5"}
+      {:tokenizers, "~> 0.5"},
+      # Reads LeRobotDataset v3.0 frame-data parquet files (episodes'
+      # action/state/index columns) -- the Nx ecosystem's own DataFrame
+      # library (Rust NIF over Polars, no Python), same "own the format,
+      # not the training logic" boundary as safetensors/tokenizers above.
+      # Used by SmolVLA.Dataset (see finetune_job's episode-loading).
+      {:explorer, "~> 0.12"},
+      # Optimizer implementations for the Nx ecosystem (Adam), extracted
+      # from Axon's graph-building DSL into a standalone package with no
+      # dependency on Axon itself -- see FineTuneJob's own moduledoc for
+      # why Axon's DSL doesn't fit this already-hand-written Nx.Defn model.
+      {:polaris, "~> 0.1"}
     ]
   end
 end
