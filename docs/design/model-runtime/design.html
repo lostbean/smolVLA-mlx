@@ -1314,11 +1314,14 @@ silent restart from scratch, never a silent continuation from a corrupt
 checkpoint.</p>
 <p><strong>Cutover gate:</strong> promoted from &quot;designed, not built&quot; to the production
 default only once a task-performance-parity check — fine-tuning both 01.3 and
-01.4 on identical episodes, then comparing the resulting policies' task
-success rate on held-out evaluation episodes, never their loss curves — shows
-01.4 is not meaningfully worse. Until that gate clears, 01.3 remains the
-production trainer and 01.4 is the evaluated candidate. See
-<a href="../../adr/0005-elixir-native-finetuning-conditional-retirement.md#adr-0005">ADR-0005</a>.</p>
+01.4 on identical episodes, then comparing the resulting policies' <a href="CONTEXT.md#term-action-accuracy-proxy">action-
+accuracy proxy</a> on held-out evaluation
+episodes, never their loss curves — shows 01.4 is not meaningfully worse.
+Until that gate clears, 01.3 remains the production trainer and 01.4 is the
+evaluated candidate. See
+<a href="../../adr/0005-elixir-native-finetuning-conditional-retirement.md#adr-0005">ADR-0005</a>
+and
+<a href="../../adr/0009-offline-action-accuracy-as-task-success-proxy.md#adr-0009">ADR-0009</a>.</p>
 <footer class="colophon">This document owns the model-runtime components; CONTEXT owns the terms; ADRs own the rationale; the root indexes both contexts.</footer>
 </body>
 </html>

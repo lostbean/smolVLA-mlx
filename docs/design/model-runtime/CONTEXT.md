@@ -40,6 +40,18 @@ LeRobotDataset format, used as [FineTuneJob](design.md) input (components
 environment) never changes its shape or how a `FineTuneJob` adapter consumes
 it.
 
+### Action-accuracy proxy {#term-action-accuracy-proxy}
+
+The offline stand-in for task success used by the [cutover
+gate](design.md): a fine-tuned policy's predicted action chunks compared
+against a held-out episode's real recorded actions, plus throughput (actions
+or images per second) as an orthogonal compute-performance dimension. Used
+because this system has no simulator or connected robot to measure genuine
+task completion. See
+[ADR-0009](../../adr/0009-offline-action-accuracy-as-task-success-proxy.md#adr-0009).
+_Avoid_: "task success rate" alone, unqualified — always name it a proxy, so
+a reader never mistakes it for a live-rollout result.
+
 ### LeRobot-native checkpoint {#term-lerobot-native-checkpoint}
 
 A real published SmolVLA checkpoint's actual on-disk shape: a flat

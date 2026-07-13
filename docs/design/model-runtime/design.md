@@ -300,8 +300,11 @@ checkpoint.
 
 **Cutover gate:** promoted from "designed, not built" to the production
 default only once a task-performance-parity check — fine-tuning both 01.3 and
-01.4 on identical episodes, then comparing the resulting policies' task
-success rate on held-out evaluation episodes, never their loss curves — shows
-01.4 is not meaningfully worse. Until that gate clears, 01.3 remains the
-production trainer and 01.4 is the evaluated candidate. See
-[ADR-0005](../../adr/0005-elixir-native-finetuning-conditional-retirement.md#adr-0005).
+01.4 on identical episodes, then comparing the resulting policies' [action-
+accuracy proxy](CONTEXT.md#term-action-accuracy-proxy) on held-out evaluation
+episodes, never their loss curves — shows 01.4 is not meaningfully worse.
+Until that gate clears, 01.3 remains the production trainer and 01.4 is the
+evaluated candidate. See
+[ADR-0005](../../adr/0005-elixir-native-finetuning-conditional-retirement.md#adr-0005)
+and
+[ADR-0009](../../adr/0009-offline-action-accuracy-as-task-success-proxy.md#adr-0009).
