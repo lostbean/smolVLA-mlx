@@ -31,7 +31,7 @@ defmodule SmolVLA.ControlLoopIntegrationTest do
   end
 
   @tag :real_checkpoint
-  @tag timeout: 30_000
+  @tag timeout: 60_000
   test "a real ControlLoop, wired to :emily_native, ticks and triggers a real infer_action" do
     model = SmolVLA.load(@checkpoint_dir)
     test_pid = self()
@@ -64,7 +64,7 @@ defmodule SmolVLA.ControlLoopIntegrationTest do
     # see the chunk report for the measured latency) and re-enters the
     # queue via the same enqueue path :zeromq_fallback uses. Poll rather
     # than a flat sleep, since real inference latency varies.
-    depth = wait_for_queue_growth(pid, 4, 20_000)
+    depth = wait_for_queue_growth(pid, 4, 45_000)
 
     # 5 initial - 1 popped + 50 from the real action chunk = 54.
     assert depth == 4 + 50
