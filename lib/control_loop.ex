@@ -14,9 +14,10 @@ defmodule ControlLoop do
     * "Two adapters behind one port, swappable without upstream change" --
       `ControlLoop` calls `infer_action` through whichever adapter is
       configured (`adapter_module`/`adapter_client`) the same way regardless
-      of which one is active. Only `:zeromq_fallback` has a real
-      implementation in this chunk; `:emily_native` (the next chunk) is
-      accepted as an option but not yet built (see `start_link/1`);
+      of which one is active. Both `:zeromq_fallback`
+      (`ControlLoop.ZeroMQClient`) and `:emily_native` (`SmolVLA.Adapter`,
+      backed by an in-process `SmolVLA.t()`) dispatch through the identical
+      generic path -- see `start_link/1`;
     * "the queue is never read past its safe depth" -- each tick checks the
       queue's depth *before* popping. If that pre-pop depth is already below
       the low-water threshold, the next `infer_action` call is fired first,
@@ -57,15 +58,14 @@ defmodule ControlLoop do
   @doc """
   Starts a `ControlLoop`.
 
-  `adapter: :zeromq_fallback` is the only adapter with a real
-  implementation in this chunk -- pass `adapter_module` (e.g.
-  `ControlLoop.ZeroMQClient`) and `adapter_client` (the value that module's
-  own `infer_action/2` expects as its first argument, e.g. a connected
-  `ControlLoop.ZeroMQClient.t()`). `adapter: :emily_native` is accepted as a
-  recognized option (the interface this future chunk will slot into without
-  `ControlLoop`'s own public shape changing) but returns
-  `{:error, {:not_yet_implemented, :emily_native}}` rather than starting --
-  see `docs/design/control-loop/design.md`'s pending-build ledger.
+  Both `adapter: :zeromq_fallback` and `adapter: :emily_native` have real
+  implementations -- pass `adapter_module` (e.g. `ControlLoop.ZeroMQClient`
+  or `SmolVLA.Adapter`) and `adapter_client` (the value that module's own
+  `infer_action/2` expects as its first argument, e.g. a connected
+  `ControlLoop.ZeroMQClient.t()` or a loaded `SmolVLA.t()`). A bare
+  `adapter: :emily_native` with no `adapter_module`/`adapter_client`
+  supplied still returns `{:error, {:not_yet_implemented, :emily_native}}`
+  rather than crashing on a missing option.
 
   Other options:
     * `low_water_threshold` -- the `ActionQueue` depth below which the next
@@ -94,13 +94,23 @@ defmodule ControlLoop do
   def start_link(opts) do
     case Keyword.fetch(opts, :adapter) do
       {:ok, :zeromq_fallback} ->
-        {genserver_opts, init_opts} =
-          Keyword.split(opts, [:name, :timeout, :debug, :spawn_opt, :hibernate_after])
-
-        GenServer.start_link(__MODULE__, init_opts, genserver_opts)
+        start_with_adapter(opts)
 
       {:ok, :emily_native} ->
-        {:error, {:not_yet_implemented, :emily_native}}
+        # `:emily_native` dispatches through the identical generic path as
+        # `:zeromq_fallback` once a real adapter_module/adapter_client are
+        # supplied (model-runtime design component 01.2's SmolVLA.Adapter,
+        # e.g.) -- ControlLoop itself stays adapter-agnostic, per this
+        # context's "two adapters behind one port, swappable without
+        # upstream change" goal. A bare `adapter: :emily_native` with no
+        # adapter wired in yet (this option's only caller before this
+        # chunk) still returns the same not-yet-implemented error it
+        # always has, rather than crashing on a missing adapter_module.
+        if Keyword.has_key?(opts, :adapter_module) and Keyword.has_key?(opts, :adapter_client) do
+          start_with_adapter(opts)
+        else
+          {:error, {:not_yet_implemented, :emily_native}}
+        end
 
       {:ok, other} ->
         {:error, {:unknown_adapter, other}}
@@ -108,6 +118,13 @@ defmodule ControlLoop do
       :error ->
         {:error, :adapter_required}
     end
+  end
+
+  defp start_with_adapter(opts) do
+    {genserver_opts, init_opts} =
+      Keyword.split(opts, [:name, :timeout, :debug, :spawn_opt, :hibernate_after])
+
+    GenServer.start_link(__MODULE__, init_opts, genserver_opts)
   end
 
   @doc "Invoked on the tick timer: pops one action, sends it, and tops up the queue if it's running low."

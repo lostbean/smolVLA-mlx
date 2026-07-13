@@ -30,7 +30,23 @@ defmodule ControlLoop.MixProject do
       # no NIF, no libzmq system dependency.
       {:chumak, "~> 1.5"},
       # MessagePack wire format for the ZeroMQ fallback adapter (ADR-0007).
-      {:msgpax, "~> 2.4"}
+      {:msgpax, "~> 2.4"},
+      # Elixir bindings + Nx.Backend for Apple MLX -- the emily-native
+      # infer_action adapter (ADR-0003, model-runtime design component 01.2).
+      # Precompiled NIF, no C++ build step.
+      {:emily, "~> 1.0"},
+      # Reads the real checkpoint's model.safetensors into Nx tensors.
+      # emily itself has no safetensors loader (see component 01.2).
+      {:safetensors, "~> 0.1.3"},
+      # Instruction tokenization: reads the same tokenizer.json the Python
+      # side's transformers.AutoTokenizer.from_pretrained(vlm_model_name)
+      # loads (HuggingFaceTB/SmolVLM2-500M-Video-Instruct's own tokenizer
+      # -- SmolVLA's checkpoint does not bundle its own). Not a violation
+      # of ADR-0004's "weights-only" boundary: this reads a standard
+      # tokenizer artifact independently on each side, exactly like both
+      # sides independently read model.safetensors -- no Python code or
+      # process crosses the boundary.
+      {:tokenizers, "~> 0.5"}
     ]
   end
 end
