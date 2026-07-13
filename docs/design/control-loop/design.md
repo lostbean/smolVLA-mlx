@@ -198,3 +198,28 @@ instead).
 `{:error, reason}` to `ControlLoop`, which is the only place that decides what
 a failed inference call means for the tick (per 01.1); this client never
 silently retries indefinitely or swallows an error.
+
+**Wire format:** a ZeroMQ `REQ`/`REP` socket exchanging
+[MessagePack](../../adr/0007-msgpack-wire-format-for-zeromq-fallback.md#adr-0007)-encoded
+messages — chosen over JSON so the request's image and the response's action
+chunk carry as native binary arrays, no base64 inflation. One request maps to
+one [observation](../model-runtime/CONTEXT.md#term-observation); one response
+maps to one [action chunk](../model-runtime/CONTEXT.md#term-action-chunk) or
+an explicit error:
+
+```
+Request  (map):
+  image:       binary, raw HWC uint8 bytes, row-major
+  image_shape: [height, width, channels]
+  state:       array of float32, the robot's proprioceptive state vector
+  instruction: string, the language instruction
+
+Response (map), exactly one of:
+  ok:     {action_chunk: array of array of float32}  # shape (chunk_size, action_dim)
+  error:  {message: string}                          # malformed request or inference failure
+```
+
+A request whose `state` length mismatches the loaded checkpoint's declared
+action-space dimensionality is rejected with the `error` shape before any
+inference runs — the same fail-loud-before-forward-pass invariant component
+01.1 holds, carried across the network seam rather than silently coerced.

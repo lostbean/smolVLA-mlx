@@ -1218,6 +1218,27 @@ instead).</p>
 <code>{:error, reason}</code> to <code>ControlLoop</code>, which is the only place that decides what
 a failed inference call means for the tick (per 01.1); this client never
 silently retries indefinitely or swallows an error.</p>
+<p><strong>Wire format:</strong> a ZeroMQ <code>REQ</code>/<code>REP</code> socket exchanging
+<a href="../../adr/0007-msgpack-wire-format-for-zeromq-fallback.md#adr-0007">MessagePack</a>-encoded
+messages — chosen over JSON so the request's image and the response's action
+chunk carry as native binary arrays, no base64 inflation. One request maps to
+one <a href="../model-runtime/CONTEXT.md#term-observation">observation</a>; one response
+maps to one <a href="../model-runtime/CONTEXT.md#term-action-chunk">action chunk</a> or
+an explicit error:</p>
+<pre><code>Request  (map):
+  image:       binary, raw HWC uint8 bytes, row-major
+  image_shape: [height, width, channels]
+  state:       array of float32, the robot's proprioceptive state vector
+  instruction: string, the language instruction
+
+Response (map), exactly one of:
+  ok:     {action_chunk: array of array of float32}  # shape (chunk_size, action_dim)
+  error:  {message: string}                          # malformed request or inference failure
+</code></pre>
+<p>A request whose <code>state</code> length mismatches the loaded checkpoint's declared
+action-space dimensionality is rejected with the <code>error</code> shape before any
+inference runs — the same fail-loud-before-forward-pass invariant component
+01.1 holds, carried across the network seam rather than silently coerced.</p>
 <footer class="colophon">This document owns the control-loop components; CONTEXT owns the terms; ADRs own the rationale; the root indexes both contexts.</footer>
 <script src="https://cdn.jsdelivr.net/npm/mermaid@11.6.0/dist/mermaid.min.js"></script>
 <script>
