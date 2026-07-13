@@ -102,11 +102,30 @@ budget, because the port dispatches per-layer rather than as one traced
 whole-model `defn` graph, the remaining open work for that adapter — and
 fine-tuning (component 01.4, `Nx.Defn.value_and_grad` plus `Polaris`) — a
 real training run reloads through both inference adapters with structurally
-identical safetensors output to the Python trainer's. **Not yet judged:**
-the task-performance-parity gate between the two trainers (component 01.4's
-own cutover gate) has not run — 01.4 stays an evaluated candidate, not the
-production trainer, until it does. See
-[ADR-0003](../../adr/0003-emily-native-primary-zeromq-fallback.md#adr-0003).
+identical safetensors output to the Python trainer's. **Judged
+(2026-07-13):** the task-performance-parity gate between the two trainers
+(component 01.4's own cutover gate) has run — both trainers fine-tuned 20
+real steps against an identical 44-episode training subset of
+`lerobot/svla_so101_pickplace` and the identical `lerobot/smolvla_base`
+starting checkpoint, evaluated identically against a 6-episode held-out set
+(30 frames) via the [action-accuracy
+proxy](CONTEXT.md#term-action-accuracy-proxy) (never a live task-success
+rate, per ADR-0009): Elixir's accuracy proxy (38.80 mean absolute error) was
+actually lower (better) than Python's (46.35) on this run — a −16.3%
+"regression" against a documented ≤20% threshold, i.e. comfortably within
+it in the favorable direction — and Elixir's own-adapter throughput (0.82
+actions/sec) was 27.1% of Python's against a documented ≥10% floor — both
+sub-gates pass. (Small sample — 30 held-out frames, 20 training steps each
+— so this should be read as "not meaningfully worse," per ADR-0005's own
+bar, rather than as proof Elixir is definitively more accurate.)
+**01.4 is promoted to the production trainer**; 01.3 remains the reference
+implementation and permanent fallback per ADR-0005. See
+[ADR-0003](../../adr/0003-emily-native-primary-zeromq-fallback.md#adr-0003),
+[ADR-0005](../../adr/0005-elixir-native-finetuning-conditional-retirement.md#adr-0005),
+and
+[ADR-0009](../../adr/0009-offline-action-accuracy-as-task-success-proxy.md#adr-0009).
+The full run configuration and numbers are recorded in
+`finetune_job/parity_gate/parity_gate_report.json`.
 :::
 
 ## 01 Components
@@ -303,8 +322,10 @@ default only once a task-performance-parity check — fine-tuning both 01.3 and
 01.4 on identical episodes, then comparing the resulting policies' [action-
 accuracy proxy](CONTEXT.md#term-action-accuracy-proxy) on held-out evaluation
 episodes, never their loss curves — shows 01.4 is not meaningfully worse.
-Until that gate clears, 01.3 remains the production trainer and 01.4 is the
-evaluated candidate. See
+**This gate has run (2026-07-13) and passed**: 01.4 is the production
+trainer; 01.3 remains the reference implementation and permanent fallback
+per ADR-0005's own fallback path. See this context's own "Pending updates"
+section above for the real run's numbers, and
 [ADR-0005](../../adr/0005-elixir-native-finetuning-conditional-retirement.md#adr-0005)
 and
 [ADR-0009](../../adr/0009-offline-action-accuracy-as-task-success-proxy.md#adr-0009).
