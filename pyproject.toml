@@ -5,6 +5,8 @@ description = "SmolVLA on Apple Silicon via MLX, driven from an Elixir/BEAM cont
 requires-python = ">=3.13"
 dependencies = [
     "mlx-vlm",
+    "msgpack>=1.2.1",
+    "pyzmq>=27.1.0",
 ]
 
 [tool.uv.workspace]
