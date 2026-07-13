@@ -4,8 +4,10 @@ version = "0.1.0"
 description = "SmolVLA on Apple Silicon via MLX, driven from an Elixir/BEAM control loop."
 requires-python = ">=3.13"
 dependencies = [
+    "lerobot[dataset,training]>=0.6,<0.7",
     "mlx-vlm",
     "msgpack>=1.2.1",
+    "num2words>=0.5.14",
     "pyzmq>=27.1.0",
 ]
 
