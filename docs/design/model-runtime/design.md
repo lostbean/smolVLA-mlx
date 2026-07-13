@@ -89,11 +89,14 @@ LoRA/full fine-tuning of the action expert) is designed, not built. See
 [ADR-0001](../../adr/0001-parallel-action-entry-point.md#adr-0001).
 :::
 
-:::pending {kind=build since=2026-07-12}
-The Elixir-native `Nx.Defn` adapter (SmolVLA's forward pass reimplemented
-against `emily`'s `Nx.Backend`) is designed, not built. A `/prototype` run on
-2026-07-12 de-risked the core mechanism (see 01.2); the full-scale port
-against real SmolVLA weights remains to be built. See
+:::pending {kind=build since=2026-07-13}
+The Elixir-native `Nx.Defn` adapter's forward pass (SmolVLA's inference,
+component 01.2) is built and conformance-checked against real weights —
+0.65% mean relative error against the Python implementation. Its warm
+latency (~1.2s) is ~12× over the 100ms budget, because the port dispatches
+per-layer rather than as one traced whole-model `defn` graph; closing this
+gap is the remaining open work for this adapter. Elixir-native fine-tuning
+(component 01.4) is untouched and separately pending. See
 [ADR-0003](../../adr/0003-emily-native-primary-zeromq-fallback.md#adr-0003).
 :::
 
@@ -204,10 +207,23 @@ and 5.26ms p50 latency (N=50) against a 100ms budget — roughly 19× headroom
 even against the strict 33ms/30Hz-every-tick bar. This confirms the mechanism
 — cross-attention into a frozen intermediate layer, the iterative
 flow-matching structure, and `emily`'s op coverage — is expressible and fast
-enough. **Not yet proven:** the full-scale port against SmolVLA's real
-~450M-parameter backbone and ~100M-parameter action expert, and against real
-trained weights rather than random ones — that remains the open work in the
-[pending ledger](../design.md).
+enough.
+
+**Proven at full scale (2026-07-13):** the real port against SmolVLA's actual
+~450M-parameter backbone and ~100M-parameter action expert, real trained
+`lerobot/smolvla_base` weights, and a real conformance check against the
+Python implementation (component 01.1) rather than a NumPy oracle —
+0.65% mean relative error / 0.008 max absolute difference on a real
+observation, well inside the 2% budget the errors' own bf16-drift character
+justifies (see this component's test suite for the full reasoning). This
+confirms the mechanism holds at real scale, not just the prototype's stand-in.
+**Not yet resolved:** measured warm latency is ~1.2s against the 100ms
+budget — roughly 12× over, not the prototype's 19×-under-budget headroom.
+Root cause: the port dispatches each layer/op as its own `Emily.Fast`/
+`Nx.Defn` call from Elixir orchestration rather than one whole-model traced
+`defn` graph, so `Emily.Compiler`'s single-NIF whole-graph replay speedup
+never applies. Closing this gap — restructuring the forward pass into one
+traced graph — is the next open work; see the [pending ledger](../design.md).
 
 ### 01.3 FineTuneJob (Python) — responsibility, interface, invariants
 
