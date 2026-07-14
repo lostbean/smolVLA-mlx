@@ -1299,6 +1299,65 @@ whole-graph replay speedup never applies — worth closing regardless of the
 real deadline's slack, since it directly trades against how aggressive a
 tick rate or threshold this system can later choose. See the <a href="../design.html">pending
 ledger</a>.</p>
+<p><strong>Cross-runtime comparison (2026-07-14):</strong> the Python adapter (01.1) does
+the identical <code>infer_action</code> work substantially faster:</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Python (01.1, direct MLX)</th>
+<th>Elixir-native (01.2, emily/<code>Nx.Defn</code>)</th>
+<th>Gap</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Warm latency, one <code>infer_action</code> call</td>
+<td>~327–331ms</td>
+<td>~1,200–1,221ms</td>
+<td>Elixir ~3.7× slower</td>
+</tr>
+<tr>
+<td>Throughput</td>
+<td>~3.0 actions/sec</td>
+<td>~0.82 actions/sec</td>
+<td>Elixir ~27% of Python's rate</td>
+</tr>
+<tr>
+<td>Against the real ~5s deadline (derived above, not the stale 100ms figure)</td>
+<td>~15× headroom</td>
+<td>~3× headroom</td>
+<td>both clear it; Python by more</td>
+</tr>
+</tbody>
+</table>
+<p>Both adapters clear the real deadline derived above — this is a real,
+measured gap, not a blocking one.</p>
+<div class="callout info">
+<div class="entry-head"><span class="label">Why the dispatch-tax fix is blocked, not just unbuilt</span></div>
+<div class="body">
+<p>Root-causing this gap (see above) motivated trying the fix directly: fusing
+<code>Emily.Fast</code>'s kernels (<code>rms_norm</code>, <code>rope</code>,
+<code>scaled_dot_product_attention_with_mask</code>) into one traced <code>defn</code> graph
+across a layer or the whole model. This turned out to be blocked by a real
+<code>emily</code> bug, not just unbuilt work — filed upstream as
+<a href="https://github.com/ausimian/emily/issues/205">ausimian/emily#205</a>: every
+<code>Emily.Fast</code> kernel's public function is plain <code>def</code>, and <code>defn</code>'s
+call-dispatch requires the <em>callee itself</em> to be <code>defn</code>-defined; the
+kernels' own <code>Nx.block</code> fallback bodies are also plain <code>def</code>. Converting
+the fallbacks to <code>defnp</code> (tried in a fork,
+<a href="https://github.com/lostbean/emily">lostbean/emily</a> branch
+<code>fix-fast-defn-composition</code>) compiles but doesn't resolve it — making the
+<em>public</em> functions <code>defn</code> too then hits a second wall: <code>Nx.block</code>'s
+pin-matched callback signature (<code>fn ^block, x, weight -&gt; ... end</code>) isn't
+itself expressible inside a <code>defn</code> body. This looks like a gap in
+<code>Nx.block</code>'s actual contract versus what <code>emily</code>'s own moduledoc claims
+(&quot;call these from inside a <code>defn</code>&quot;), reported as such rather than resolved
+locally — it needs the maintainer's own judgment on <code>Nx.block</code>'s intended
+construction, not a mechanical patch. Revisit if/when upstream responds;
+not blocking anything in this repo today.</p>
+</div>
+</div>
 <h3 id="01-3-finetunejob-python-responsibility-interface-invariants">01.3 FineTuneJob (Python) — responsibility, interface, invariants</h3>
 <p><strong>Responsible for:</strong> taking a set of <a href="CONTEXT.md#term-episode">episodes</a> —
 real-robot or simulation-sourced, indistinguishable to this contract — and

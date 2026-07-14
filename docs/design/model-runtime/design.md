@@ -270,6 +270,41 @@ real deadline's slack, since it directly trades against how aggressive a
 tick rate or threshold this system can later choose. See the [pending
 ledger](../design.md).
 
+**Cross-runtime comparison (2026-07-14):** the Python adapter (01.1) does
+the identical `infer_action` work substantially faster:
+
+| | Python (01.1, direct MLX) | Elixir-native (01.2, emily/`Nx.Defn`) | Gap |
+| --- | --- | --- | --- |
+| Warm latency, one `infer_action` call | ~327–331ms | ~1,200–1,221ms | Elixir ~3.7× slower |
+| Throughput | ~3.0 actions/sec | ~0.82 actions/sec | Elixir ~27% of Python's rate |
+| Against the real ~5s deadline (derived above, not the stale 100ms figure) | ~15× headroom | ~3× headroom | both clear it; Python by more |
+
+Both adapters clear the real deadline derived above — this is a real,
+measured gap, not a blocking one.
+
+:::info {title="Why the dispatch-tax fix is blocked, not just unbuilt"}
+Root-causing this gap (see above) motivated trying the fix directly: fusing
+`Emily.Fast`'s kernels (`rms_norm`, `rope`,
+`scaled_dot_product_attention_with_mask`) into one traced `defn` graph
+across a layer or the whole model. This turned out to be blocked by a real
+`emily` bug, not just unbuilt work — filed upstream as
+[ausimian/emily#205](https://github.com/ausimian/emily/issues/205): every
+`Emily.Fast` kernel's public function is plain `def`, and `defn`'s
+call-dispatch requires the *callee itself* to be `defn`-defined; the
+kernels' own `Nx.block` fallback bodies are also plain `def`. Converting
+the fallbacks to `defnp` (tried in a fork,
+[lostbean/emily](https://github.com/lostbean/emily) branch
+`fix-fast-defn-composition`) compiles but doesn't resolve it — making the
+*public* functions `defn` too then hits a second wall: `Nx.block`'s
+pin-matched callback signature (`fn ^block, x, weight -> ... end`) isn't
+itself expressible inside a `defn` body. This looks like a gap in
+`Nx.block`'s actual contract versus what `emily`'s own moduledoc claims
+("call these from inside a `defn`"), reported as such rather than resolved
+locally — it needs the maintainer's own judgment on `Nx.block`'s intended
+construction, not a mechanical patch. Revisit if/when upstream responds;
+not blocking anything in this repo today.
+:::
+
 ### 01.3 FineTuneJob (Python) — responsibility, interface, invariants
 
 **Responsible for:** taking a set of [episodes](CONTEXT.md#term-episode) —
