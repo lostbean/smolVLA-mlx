@@ -250,8 +250,9 @@ Python implementation (component 01.1) rather than a NumPy oracle —
 observation, well inside the 2% budget the errors' own bf16-drift character
 justifies (see this component's test suite for the full reasoning). This
 confirms the mechanism holds at real scale, not just the prototype's stand-in.
-**Not yet resolved:** measured warm latency is ~1.6s (a more recent
-measurement refines the earlier ~1.2s figure). The real deadline this must
+**Latency:** measured warm latency is ~634ms median (2026-07-15, 5 samples,
+606.9–641.0ms) after the dispatch-tax fix landed — down from the ~1.2s that
+motivated it (see the resolved note below). The real deadline this must
 clear is not a flat 100ms per call — `ControlLoop` (01.1) fires
 `infer_action` asynchronously via a `Task`, never blocking the tick loop, so
 the actual constraint is *time to complete before the
@@ -260,49 +261,54 @@ the actual constraint is *time to complete before the
 to empty* — at this system's own 5Hz-class target tick rate and a
 25-action threshold (half the 50-action chunk size), that budget is ~5s,
 not 100ms.
-Measured against that real bar, ~1.6s has real headroom (~3×), though it
-erodes fast at a faster tick rate or a lower threshold. Root cause of the
-slowness itself: the port dispatches each layer/op as its own
+Measured against that real bar, ~634ms has ample headroom (~8×), and the
+dispatch-tax fix (below) roughly halved it. Root cause of the earlier
+slowness: the port dispatched each layer/op as its own
 `Emily.Fast`/`Nx.Defn` call from Elixir orchestration rather than one
 whole-model traced `defn` graph, so `Emily.Compiler`'s single-NIF
-whole-graph replay speedup never applies — worth closing regardless of the
-real deadline's slack, since it directly trades against how aggressive a
-tick rate or threshold this system can later choose. See the [pending
-ledger](../design.md).
+whole-graph replay speedup never applied. The 16-layer Expert stack is now
+traced as one `defn` graph per Euler step (`SmolVLA.Expert.forward/6` is a
+`deftransform` shim over a `defn` entry point), so that replay speedup now
+applies. See the [pending ledger](../design.md).
 
-**Cross-runtime comparison (2026-07-14):** the Python adapter (01.1) does
-the identical `infer_action` work substantially faster:
+**Cross-runtime comparison (updated 2026-07-15, post-fix):** the Python
+adapter (01.1) still does the identical `infer_action` work faster, but the
+gap narrowed sharply after the dispatch-tax fix (below) roughly halved the
+Elixir-native latency:
 
 | | Python (01.1, direct MLX) | Elixir-native (01.2, emily/`Nx.Defn`) | Gap |
 | --- | --- | --- | --- |
-| Warm latency, one `infer_action` call | ~327–331ms | ~1,200–1,221ms | Elixir ~3.7× slower |
-| Throughput | ~3.0 actions/sec | ~0.82 actions/sec | Elixir ~27% of Python's rate |
-| Against the real ~5s deadline (derived above, not the stale 100ms figure) | ~15× headroom | ~3× headroom | both clear it; Python by more |
+| Warm latency, one `infer_action` call | ~327–331ms | ~634ms median (5 samples, 606.9–641.0ms) | Elixir ~1.9× slower |
+| Throughput | ~3.0 actions/sec | ~1.6 actions/sec | Elixir ~53% of Python's rate |
+| Against the real ~5s deadline (derived above, not the stale 100ms figure) | ~15× headroom | ~8× headroom | both clear it; Python by more |
 
 Both adapters clear the real deadline derived above — this is a real,
-measured gap, not a blocking one.
+measured gap, not a blocking one, and the Elixir side halved its latency
+(from ~1.2s) once the dispatch tax was removed.
 
-:::info {title="Why the dispatch-tax fix is blocked, not just unbuilt"}
-Root-causing this gap (see above) motivated trying the fix directly: fusing
-`Emily.Fast`'s kernels (`rms_norm`, `rope`,
-`scaled_dot_product_attention_with_mask`) into one traced `defn` graph
-across a layer or the whole model. This turned out to be blocked by a real
-`emily` bug, not just unbuilt work — filed upstream as
-[ausimian/emily#205](https://github.com/ausimian/emily/issues/205): every
-`Emily.Fast` kernel's public function is plain `def`, and `defn`'s
-call-dispatch requires the *callee itself* to be `defn`-defined; the
-kernels' own `Nx.block` fallback bodies are also plain `def`. Converting
-the fallbacks to `defnp` (tried in a fork,
+:::info {title="Dispatch-tax fix: unblocked and landed (2026-07-15)"}
+Root-causing this gap (see above) motivated the fix: fusing the per-op
+`Emily.Fast`/`Nx.Defn` dispatch into one traced `defn` graph so
+`Emily.Compiler`'s single-NIF whole-graph replay applies instead of eager
+per-op dispatch from Elixir orchestration. This was **resolved**, not just
+attempted. The 16-layer Expert stack is now traced as one `defn` graph per
+Euler step (`SmolVLA.Expert.forward/6` converted from `def` to a
+`deftransform` shim over a `defn` entry point), and the `emily` dependency
+is pinned to the fork
 [lostbean/emily](https://github.com/lostbean/emily) branch
-`fix-fast-defn-composition`) compiles but doesn't resolve it — making the
-*public* functions `defn` too then hits a second wall: `Nx.block`'s
-pin-matched callback signature (`fn ^block, x, weight -> ... end`) isn't
-itself expressible inside a `defn` body. This looks like a gap in
-`Nx.block`'s actual contract versus what `emily`'s own moduledoc claims
-("call these from inside a `defn`"), reported as such rather than resolved
-locally — it needs the maintainer's own judgment on `Nx.block`'s intended
-construction, not a mechanical patch. Revisit if/when upstream responds;
-not blocking anything in this repo today.
+`fix/205-fast-defn-composition` (commit `5ade402`) carrying the fix for
+[ausimian/emily#205](https://github.com/ausimian/emily/issues/205).
+
+The original block was a real `emily` limitation: every `Emily.Fast`
+kernel's public function was plain `def`, and `defn`'s call-dispatch
+requires the *callee itself* to be `defn`-defined — so the kernels could not
+be composed inside a whole-graph `defn`. The fork branch resolves this,
+letting the whole Expert stack trace as a single graph that
+`Emily.Compiler` replays as one NIF call rather than per-op eager dispatch.
+Measured effect: warm `infer_action/4` dropped from ~1.2s to ~634ms median
+(~1.9× the Python adapter, down from ~3.7×), numerical parity unchanged at
+0.646% mean relative error / 0.0081 max abs diff against the Python
+reference, inside the 2% budget.
 :::
 
 ### 01.3 FineTuneJob (Python) — responsibility, interface, invariants

@@ -123,7 +123,45 @@ defmodule SmolVLA.Expert do
   """
   @spec forward(map(), Config.t(), Nx.Tensor.t(), Nx.Tensor.t(), Nx.Tensor.t(), Nx.Tensor.t()) ::
           {Nx.Tensor.t(), Nx.Tensor.t()}
-  def forward(weights, %Config{} = config, backbone_embeds, expert_embeds, pad_mask, att_mask) do
+  deftransform forward(
+                 weights,
+                 %Config{} = config,
+                 backbone_embeds,
+                 expert_embeds,
+                 pad_mask,
+                 att_mask
+               ) do
+    forward_traced(weights, backbone_embeds, expert_embeds, pad_mask, att_mask, config: config)
+  end
+
+  # The traced entry point: called eagerly (no enclosing defn), the defn
+  # entrypoint jits the WHOLE 16-layer joint-attention stack into a
+  # single Nx.Defn graph -- one Emily.Compiler native replay per Euler
+  # step instead of hundreds of separate eager NIF dispatches. Called
+  # from inside a caller's own defn (e.g. a future traced training
+  # step), it composes into that caller's graph instead. Requires the
+  # Emily.Fast kernels to be composable inside defn (ausimian/emily#205,
+  # fixed on the pinned fork branch). `config` rides in `opts` because
+  # defn positional arguments must be tensors/containers, and Config is
+  # a plain struct of scalars -- as a compile-time option it also keys
+  # the jit cache, so all ten Euler steps (same shapes, same config)
+  # replay one compiled program.
+  defn forward_traced(weights, backbone_embeds, expert_embeds, pad_mask, att_mask, opts \\ []) do
+    forward_stack(weights, backbone_embeds, expert_embeds, pad_mask, att_mask, opts[:config])
+  end
+
+  # Plain-Elixir stack construction, run at trace time inside the single
+  # traced graph (deftransformp): the layer loop unrolls over the 16
+  # compile-time (backbone, expert) layer pairs, and the string-keyed
+  # weight lookups resolve against the traced weights container.
+  deftransformp forward_stack(
+                  weights,
+                  backbone_embeds,
+                  expert_embeds,
+                  pad_mask,
+                  att_mask,
+                  config
+                ) do
     backbone_len = elem(Nx.shape(backbone_embeds), 1)
     mask_bool = make_att_2d_masks(pad_mask, att_mask)
     # Emily.Fast SDPA takes an ADDITIVE mask, not a boolean gate (unlike
@@ -159,7 +197,7 @@ defmodule SmolVLA.Expert do
     {backbone_out, expert_out}
   end
 
-  defp additive_mask(mask_bool, dtype) do
+  deftransformp additive_mask(mask_bool, dtype) do
     zeros = Nx.broadcast(0.0, Nx.shape(mask_bool)) |> Nx.as_type(dtype)
     neg_inf = Nx.broadcast(:neg_infinity, Nx.shape(mask_bool)) |> Nx.as_type(dtype)
     mask = Nx.select(mask_bool, zeros, neg_inf)
@@ -171,16 +209,16 @@ defmodule SmolVLA.Expert do
   # One aligned (backbone-layer, expert-layer) pair.
   # ------------------------------------------------------------------
 
-  defp layer(
-         weights,
-         %Config{} = config,
-         layer_idx,
-         is_self_attn_layer,
-         backbone_hidden,
-         expert_hidden,
-         mask,
-         backbone_len
-       ) do
+  deftransformp layer(
+                  weights,
+                  %Config{} = config,
+                  layer_idx,
+                  is_self_attn_layer,
+                  backbone_hidden,
+                  expert_hidden,
+                  mask,
+                  backbone_len
+                ) do
     num_heads = config.text.num_attention_heads
     num_kv_heads = config.text.num_key_value_heads
     head_dim = div(config.text.hidden_size, num_heads)
@@ -229,20 +267,20 @@ defmodule SmolVLA.Expert do
   # the concatenation: backbone 0..len-1, expert len..len+expert_len-1),
   # attend jointly under the shared mask, split the output back per
   # branch, each branch's own o_proj + residual + MLP.
-  defp self_attn_layer(
-         weights,
-         backbone_prefix,
-         expert_prefix,
-         backbone_hidden,
-         expert_hidden,
-         mask,
-         backbone_len,
-         num_heads,
-         num_kv_heads,
-         head_dim,
-         rope_theta,
-         eps
-       ) do
+  deftransformp self_attn_layer(
+                  weights,
+                  backbone_prefix,
+                  expert_prefix,
+                  backbone_hidden,
+                  expert_hidden,
+                  mask,
+                  backbone_len,
+                  num_heads,
+                  num_kv_heads,
+                  head_dim,
+                  rope_theta,
+                  eps
+                ) do
     {bq, bk, bv} =
       project_qkv(weights, backbone_prefix, backbone_hidden, num_heads, num_kv_heads, head_dim,
         rope_theta: rope_theta,
@@ -288,20 +326,20 @@ defmodule SmolVLA.Expert do
   # expert's OWN k_proj/v_proj (kv_dim -> kv_dim). The expert's query
   # RoPE position is renormalized to start at 0 on cross-attn layers
   # (unlike the continuing-offset self-attn layers above).
-  defp cross_attn_layer(
-         weights,
-         backbone_prefix,
-         expert_prefix,
-         backbone_hidden,
-         expert_hidden,
-         mask,
-         backbone_len,
-         num_heads,
-         num_kv_heads,
-         head_dim,
-         rope_theta,
-         eps
-       ) do
+  deftransformp cross_attn_layer(
+                  weights,
+                  backbone_prefix,
+                  expert_prefix,
+                  backbone_hidden,
+                  expert_hidden,
+                  mask,
+                  backbone_len,
+                  num_heads,
+                  num_kv_heads,
+                  head_dim,
+                  rope_theta,
+                  eps
+                ) do
     {bq, bk, bv} =
       project_qkv(weights, backbone_prefix, backbone_hidden, num_heads, num_kv_heads, head_dim,
         rope_theta: rope_theta,
@@ -365,7 +403,7 @@ defmodule SmolVLA.Expert do
   # Shared per-branch helpers.
   # ------------------------------------------------------------------
 
-  defp project_qkv(weights, prefix, hidden, num_heads, num_kv_heads, head_dim, opts) do
+  deftransformp project_qkv(weights, prefix, hidden, num_heads, num_kv_heads, head_dim, opts) do
     rope_theta = Keyword.fetch!(opts, :rope_theta)
     eps = Keyword.fetch!(opts, :eps)
     offset = Keyword.fetch!(opts, :offset)
@@ -392,7 +430,7 @@ defmodule SmolVLA.Expert do
     {q, k, v}
   end
 
-  defp mlp_residual(weights, prefix, hidden, att_out, eps) do
+  deftransformp mlp_residual(weights, prefix, hidden, att_out, eps) do
     hidden = Nx.add(hidden, att_out)
 
     normed =
@@ -413,16 +451,16 @@ defmodule SmolVLA.Expert do
     Nx.dot(x, [-1], w, [-1])
   end
 
-  defp fused_rms_norm(x, weight, opts) do
+  deftransformp fused_rms_norm(x, weight, opts) do
     Emily.Fast.rms_norm(x, weight, opts)
   end
 
-  defp split_heads(x, heads, head_dim) do
+  deftransformp split_heads(x, heads, head_dim) do
     {b, l, _} = Nx.shape(x)
     x |> Nx.reshape({b, l, heads, head_dim}) |> Nx.transpose(axes: [0, 2, 1, 3])
   end
 
-  defp merge_heads(x) do
+  deftransformp merge_heads(x) do
     {b, h, l, d} = Nx.shape(x)
     x |> Nx.transpose(axes: [0, 2, 1, 3]) |> Nx.reshape({b, l, h * d})
   end
@@ -430,5 +468,5 @@ defmodule SmolVLA.Expert do
   # k/v arrive as (B, num_kv_heads, L, head_dim); flatten back to
   # (B, L, num_kv_heads*head_dim) so the expert's k_proj/v_proj
   # (kv_dim -> kv_dim) can re-project them on cross-attn layers.
-  defp merge_heads_kv(x), do: merge_heads(x)
+  deftransformp(merge_heads_kv(x), do: merge_heads(x))
 end

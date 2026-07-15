@@ -33,8 +33,10 @@ defmodule ControlLoop.MixProject do
       {:msgpax, "~> 2.4"},
       # Elixir bindings + Nx.Backend for Apple MLX -- the emily-native
       # infer_action adapter (ADR-0003, model-runtime design component 01.2).
-      # Precompiled NIF, no C++ build step.
-      {:emily, "~> 1.0"},
+      # Pinned to the fork branch carrying the ausimian/emily#205 fix
+      # (Emily.Fast kernels composable inside a caller's own defn) until
+      # it lands in a Hex release.
+      {:emily, github: "lostbean/emily", branch: "fix/205-fast-defn-composition"},
       # Reads the real checkpoint's model.safetensors into Nx tensors.
       # emily itself has no safetensors loader (see component 01.2).
       {:safetensors, "~> 0.1.3"},
