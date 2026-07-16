@@ -288,17 +288,40 @@ defmodule SmolVLA do
     hidden_size = config.text.hidden_size
     scale = :math.sqrt(hidden_size)
 
-    {embeds_list, att_mask_values, pad_mask_values} =
+    {embeds_list, att_mask_values, pad_mask_values, _real_ref} =
       Enum.zip(images, image_masks)
-      |> Enum.reduce({[], [], []}, fn {image, is_real}, {embeds, att_vals, pad_vals} ->
-        img_emb = Vision.forward(weights, config, image)
-        img_emb = Nx.multiply(img_emb, scale)
+      |> Enum.reduce({[], [], [], nil}, fn {image, is_real},
+                                           {embeds, att_vals, pad_vals, real_ref} ->
+        # A zero-masked "fake" camera (pad_mask=false) contributes tokens
+        # that are excluded from every attention row by the pad mask --
+        # their VALUES cannot influence any output. Running the full
+        # 12-layer SigLIP tower on identical all-zero input just to
+        # produce numbers nothing reads is pure waste (~55ms/camera), so
+        # emit a zeros embedding of the exact same shape/dtype directly.
+        # The token count, ordering, and masks are all preserved.
+        #
+        # The reference shape/dtype come from the first REAL camera's
+        # real embedding (slot 0 is always real -- see prepare_images);
+        # since `0.0 * scale == 0.0`, the placeholder is emitted already
+        # post-scale.
+        {img_emb, real_ref} =
+          if is_real do
+            emb = Vision.forward(weights, config, image) |> Nx.multiply(scale)
+            {emb, real_ref || emb}
+          else
+            ref = real_ref || raise "embed_prefix: a masked camera preceded any real camera"
+            # `ref * 0.0` yields zeros with ref's exact shape, dtype, AND
+            # backend -- no stray scalar on the wrong backend.
+            {Nx.multiply(ref, 0.0), real_ref}
+          end
+
         num_tokens = Nx.axis_size(img_emb, 1)
 
         {
           [img_emb | embeds],
           att_vals ++ List.duplicate(0, num_tokens),
-          pad_vals ++ List.duplicate(is_real, num_tokens)
+          pad_vals ++ List.duplicate(is_real, num_tokens),
+          real_ref
         }
       end)
 
