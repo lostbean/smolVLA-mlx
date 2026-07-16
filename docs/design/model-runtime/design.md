@@ -97,13 +97,12 @@ separate follow-up, not blocking anything else in this ledger. See
 :::pending {kind=build since=2026-07-13}
 Both Elixir-native adapters are built: the forward pass (component 01.2,
 inference) conformance-checked at 0.65% mean relative error against the
-Python implementation — its warm latency (~1.6s) has real headroom (~3×)
-against the actual async-tick-triggered deadline (~5s at this system's own
-5Hz-class target and a 25-action low-water threshold — see 01.2's own
-latency note for the derivation), but dispatches per-layer rather than as
-one traced whole-model `defn` graph, eroding that headroom fast at a
-tighter tick rate or threshold — the remaining open work for that adapter —
-and
+Python implementation — its warm latency (~186ms, freshly re-measured
+2026-07-16) now beats the Python reference's own (~321ms same-session) and
+has ~27× headroom against the actual async-tick-triggered deadline (~5s at
+this system's own 5Hz-class target and a 25-action low-water threshold —
+see 01.2's own latency note for the derivation and the full four-step
+optimization history that closed the earlier per-layer-dispatch gap) — and
 fine-tuning (component 01.4, `Nx.Defn.value_and_grad` plus `Polaris`) — a
 real training run reloads through both inference adapters with structurally
 identical safetensors output to the Python trainer's. **Judged
@@ -305,18 +304,26 @@ config omits it. See the [pending ledger](../design.md).
 **Cross-runtime comparison (updated 2026-07-16, post-latency-gap-work):**
 the Elixir-native adapter (01.2) now does the identical `infer_action` work
 *faster* than the Python reference (01.1), after the four optimizations
-above closed and then overtook the earlier gap:
+above closed and then overtook the earlier gap. Both figures below are
+freshly re-measured this session on the same machine, same checkpoint,
+same fixture observation, same methodology (median of 9 warm runs after one
+warm-up); the Python side via `bench/warm_latency_python.py`
+(`SmolVLAModel.infer_action`, which calls `mx.eval` before returning, so
+end-to-end wall-clock is honest), the Elixir side via
+`bench/warm_latency.exs`:
 
 | | Python (01.1, direct MLX) | Elixir-native (01.2, emily/`Nx.Defn`) | Gap |
 | --- | --- | --- | --- |
-| Warm latency, one `infer_action` call | ~327–331ms | ~186ms median (9 samples, 184.3–189.3ms) | Elixir ~1.8× faster |
-| Throughput | ~3.0 actions/sec | ~5.4 actions/sec | Elixir ~1.8× Python's rate |
-| Against the real ~5s deadline (derived above, not the stale 100ms figure) | ~15× headroom | ~27× headroom | both clear it; Elixir by more |
+| Warm latency, one `infer_action` call | ~321ms median (9 samples, 319.1–345.3ms) | ~186ms median (9 samples, 184.3–189.3ms) | Elixir ~1.7× faster |
+| Throughput | ~3.1 actions/sec | ~5.4 actions/sec | Elixir ~1.7× Python's rate |
+| Against the real ~5s deadline (derived above, not the stale 100ms figure) | ~16× headroom | ~27× headroom | both clear it; Elixir by more |
 
 Both adapters clear the real deadline derived above; the Elixir side is now
 the faster of the two, having cut its warm latency from ~1.2s (pre-fix) to
 ~634ms (dispatch-tax fix) to ~186ms (the latency-gap work above), parity
 unchanged at 0.646% mean relative error / 0.0081 max abs diff throughout.
+The freshly-measured Python median (~321ms) confirms the ~327–331ms figure
+this table previously carried was real, not stale.
 
 :::info {title="Dispatch-tax fix: unblocked and landed (2026-07-15)"}
 The first step of closing the gap was fusing the per-op
