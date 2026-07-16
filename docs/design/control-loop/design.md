@@ -28,7 +28,12 @@ side. See
 
 `ControlLoop` calls `infer_action` through whichever adapter is active
 (emily-native or the ZeroMQ client) without any other code in this context
-knowing which one is in use.
+knowing which one is in use. The emily-native adapter may be reached
+in-process or across a BEAM cluster (a remote
+[InferenceServer](../model-runtime/design.md)) — a topology axis orthogonal to
+the port, not a third adapter
+([ADR-0010](../../adr/0010-beam-distribution-orthogonal-to-infer-action-port.md#adr-0010));
+the call site is a plain `GenServer.call` either way.
 :::
 
 :::no-goal
@@ -65,17 +70,14 @@ own state.
 
 ## Pending updates
 
-:::pending {kind=build since=2026-07-12}
-`ControlLoop` (the GenServer), `ActionQueue`, and the ZeroMQ client to the
-Python fallback adapter are all designed, not built. See
-[ADR-0002](../../adr/0002-elixir-owns-the-control-loop.md#adr-0002).
-:::
-
-:::pending {kind=build since=2026-07-12}
-The emily-native in-process adapter call path from `ControlLoop` is designed,
-not built, and gated on the same `/prototype` as
-[model-runtime](../model-runtime/design.md)'s Elixir-native component. See
-[ADR-0003](../../adr/0003-emily-native-primary-zeromq-fallback.md#adr-0003).
+:::pending {kind=build since=2026-07-16}
+The [observation source](CONTEXT.md#term-observation-source) injection seam on
+`ControlLoop` (component 01.1) — a `(-> observation)` function the loop calls
+when firing `infer_action`, symmetric with the existing actuator sink,
+defaulting to today's fixed placeholder — is designed, not yet built. The
+[demo](../demo/design.md)'s
+[sim env adapter](../demo/CONTEXT.md#term-sim-env-adapter) is its first customer.
+See [ADR-0011](../../adr/0011-demo-is-a-simulated-closed-loop.md#adr-0011).
 :::
 
 ## 01 Components
@@ -112,13 +114,27 @@ its low-water threshold.
 
 **Interface:**
 ```elixir
-ControlLoop.start_link(adapter: :emily_native | :zeromq_fallback) :: {:ok, pid()}
+ControlLoop.start_link(
+  adapter: :emily_native | :zeromq_fallback,
+  observation_source: (-> observation),   # injected; default a fixed placeholder
+  actuator_sink: (action -> any())         # injected; default a log line
+) :: {:ok, pid()}
 ControlLoop.tick(pid()) :: :ok  # invoked on the tick timer
 ```
 
-**Interacts with:** the bb bot's actuator interface (out of scope here — a
-no-goal); the active [infer_action port](../model-runtime/CONTEXT.md#term-infer-action-port)
-adapter, called exactly the same way regardless of which one is configured.
+**Interacts with:** two injected external seams, symmetric — its
+[observation source](CONTEXT.md#term-observation-source) (a `(-> observation)`
+function called to get the current observation when firing `infer_action`) and
+its actuator interface (the `(action -> any())` sink each popped action is sent
+to). Both are out-of-scope providers here — a no-goal; the
+[demo](../demo/design.md)'s
+[sim env adapter](../demo/CONTEXT.md#term-sim-env-adapter) is one concrete
+instance supplying both. Also the active
+[infer_action port](../model-runtime/CONTEXT.md#term-infer-action-port) adapter,
+called exactly the same way regardless of which one is configured — whether the
+emily-native adapter is in-process or a remote
+[InferenceServer](../model-runtime/design.md) across the cluster
+([ADR-0010](../../adr/0010-beam-distribution-orthogonal-to-infer-action-port.md#adr-0010)).
 
 **Invariants held:** the queue-never-read-past-safe-depth and
 action-never-executed-twice invariants from this document's foundation — both

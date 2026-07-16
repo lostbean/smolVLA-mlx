@@ -1,5 +1,19 @@
-Status: ready-for-agent
+Status: ready-for-human
 Category: enhancement
+
+## Resolution
+
+[AI-authored] Built and verified 2026-07-16. `ControlLoop`, `ActionQueue`, and
+the ZeroMQ client are present (`lib/control_loop.ex`,
+`lib/control_loop/action_queue.ex`, `lib/control_loop/zero_mq_client.ex`) and
+all acceptance criteria have covering tests that pass (`mix test
+test/control_loop/` — 34 tests, 0 failures): tick/pop one action per tick, the
+`queue_healthy`/`queue_low` state machine with below-threshold async
+`infer_action` that never blocks the tick loop, aggregation-not-replacement
+merge, both foundation invariants under a sustained run, and reconnect +
+drain-on-failure. The end-to-end criterion (real ControlLoop → real inference →
+real action chunk) is covered by the real-checkpoint integration test, which
+passes (see issue 05). Awaiting human verify-and-close.
 
 ## Parent
 

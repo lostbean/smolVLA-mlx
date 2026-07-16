@@ -1186,55 +1186,40 @@ it is designed to be a mergeable PR on its own terms.</p>
 </div>
 <h2 id="pending-updates">Pending updates</h2>
 <div class="pending">
-<div class="entry"><div class="entry-head"><span class="badges"><span class="badge build">build</span> <span class="since">since 2026-07-12</span></span></div>
+<div class="entry"><div class="entry-head"><span class="badges"><span class="badge build">build</span> <span class="since">since 2026-07-16</span></span></div>
 <div class="body">
-<p>Elixir-native SmolVLA forward pass via <code>emily</code>/<code>Nx.Defn</code>
-(<a href="model-runtime/design.html">model-runtime</a>, component 01.2) is designed but
-not built. A <code>/prototype</code> run de-risked the core mechanism; the full-scale
-port against real weights remains open. See
-<a href="../adr/0003-emily-native-primary-zeromq-fallback.md#adr-0003">ADR-0003</a>.</p>
-</div>
-</div>
-<div class="entry"><div class="entry-head"><span class="badges"><span class="badge build">build</span> <span class="since">since 2026-07-12</span></span></div>
-<div class="body">
-<p>SmolVLA support in mlx-vlm (<a href="model-runtime/design.html">model-runtime</a>) —
-config/model classes, <code>infer_action()</code>, fine-tuning — is designed but not
-built. See <a href="../adr/0001-parallel-action-entry-point.md#adr-0001">ADR-0001</a>.</p>
-</div>
-</div>
-<div class="entry"><div class="entry-head"><span class="badges"><span class="badge build">build</span> <span class="since">since 2026-07-12</span></span></div>
-<div class="body">
-<p>The ZeroMQ-Python fallback adapter and the Elixir <code>ControlLoop</code>
-(<a href="control-loop/design.html">control-loop</a>) are designed but not built. See
-<a href="../adr/0002-elixir-owns-the-control-loop.md#adr-0002">ADR-0002</a>.</p>
-</div>
-</div>
-<div class="entry"><div class="entry-head"><span class="badges"><span class="badge build">build</span> <span class="since">since 2026-07-12</span></span></div>
-<div class="body">
-<p>Elixir-native fine-tuning (<code>Nx</code>/<code>Axon</code>,
-<a href="model-runtime/design.html">model-runtime</a>) is designed but not built, along
-with the task-performance-parity check that gates retiring Python
-fine-tuning. See
-<a href="../adr/0005-elixir-native-finetuning-conditional-retirement.md#adr-0005">ADR-0005</a>.</p>
+<p>The <a href="demo/design.html">demo</a> context — a simulated SO-101 arm driven as a closed
+loop by the production control loop on a sim node, clustered to a Mac
+<a href="model-runtime/design.html">InferenceServer</a> over BEAM distribution — is designed
+but not built. It depends on <code>ControlLoop</code>/<code>ActionQueue</code> (built) gaining an
+observation-source seam and on the <code>InferenceServer</code> being built. See
+<a href="../adr/0011-demo-is-a-simulated-closed-loop.md#adr-0011">ADR-0011</a> and
+<a href="../adr/0012-sim-env-bridged-via-python-sim-server-over-zeromq.md#adr-0012">ADR-0012</a>.</p>
 </div>
 </div>
 </div>
 <h2 id="01-system-at-a-glance"><span class="secno">01</span> · System at a glance</h2>
 <div class="diagram"><pre class="mermaid">graph TD
-    Bot[&quot;bb bot&quot;]
+    Bot[&quot;bb bot / simulated arm&quot;]
+    Demo[&quot;demo context (sim rig)&quot;]
     CL[&quot;control-loop context (Elixir)&quot;]
-    MR[&quot;model-runtime context (Python/MLX)&quot;]
+    MR[&quot;model-runtime context (Python/MLX + emily)&quot;]
 
     Bot --&gt;|image, state| CL
     CL --&gt;|infer_action port| MR
     MR --&gt;|action chunk| CL
     CL --&gt;|action| Bot
+    Demo -.-&gt;|assembles| CL
+    Demo -.-&gt;|assembles| MR
 
     click CL &quot;control-loop/design.md&quot;
     click MR &quot;model-runtime/design.md&quot;
+    click Demo &quot;demo/design.md&quot;
 
     classDef ctx fill:#f4f4f8,stroke:#9a9ab0,color:#222;
+    classDef demo fill:#eef6f0,stroke:#5a9a78,color:#222;
     class CL,MR ctx;
+    class Demo demo;
 </pre></div>
 <div class="callout info">
 <div class="entry-head"><span class="label">Reading the port seam</span></div>
@@ -1242,19 +1227,23 @@ fine-tuning. See
 <p><code>control-loop</code> is the only customer of the <code>infer_action</code> port;
 <code>model-runtime</code> is the only supplier, through either of its two adapters. The
 bb bot never talks to <code>model-runtime</code> directly — everything robot-facing stays
-inside <code>control-loop</code>.</p>
+inside <code>control-loop</code>. The <code>demo</code> context is a scaffold (dashed edges): it
+assembles the two production contexts into a runnable two-node rig around a
+simulated arm, and owns no model or queue logic of its own — see
+<a href="demo/design.html">demo</a>.</p>
 </div>
 </div>
-<h2 id="02-the-two-contexts"><span class="secno">02</span> · The two contexts</h2>
-<div class="cards cols-2">
+<h2 id="02-the-three-contexts"><span class="secno">02</span> · The three contexts</h2>
+<div class="cards cols-3">
 <article class="card" id="model-runtime-lens-depth">
 <div class="entry-head"><span class="label">model-runtime </span><span class="badges"><span class="pill depth">depth</span></span></div>
 <div class="body">
 <p><strong>Own SmolVLA's forward pass, its weights, and how they're produced or
 consumed.</strong> The mlx-vlm fork (config, model class, <code>infer_action()</code>,
-fine-tuning) and the Elixir-native <code>Nx.Defn</code> port live here as two adapters
-behind one port. Its vocabulary: action chunk, action expert, infer_action
-port, episode. Read <a href="model-runtime/design.html">model-runtime</a>.</p>
+fine-tuning), the Elixir-native <code>Nx.Defn</code> port, and the <code>InferenceServer</code> that
+exposes it across a cluster live here behind one port. Its vocabulary: action
+chunk, action expert, infer_action port, episode. Read
+<a href="model-runtime/design.html">model-runtime</a>.</p>
 </div>
 </article>
 <article class="card" id="control-loop-lens-state">
@@ -1264,6 +1253,16 @@ port, episode. Read <a href="model-runtime/design.html">model-runtime</a>.</p>
 GenServer, the <code>ActionQueue</code> it owns, and the ZeroMQ client that reaches the
 Python fallback adapter over the network. Its vocabulary: control loop, action
 queue, low-water threshold. Read <a href="control-loop/design.html">control-loop</a>.</p>
+</div>
+</article>
+<article class="card" id="demo-lens-composition">
+<div class="entry-head"><span class="label">demo </span><span class="badges"><span class="pill composition">composition</span></span></div>
+<div class="body">
+<p><strong>Own the runnable sim rig that assembles the other two.</strong> A sim node (a
+LeRobot/MuJoCo simulated SO-101 arm and the production control loop) clustered
+to a Mac inference node over BEAM distribution — a scaffold owning no model or
+queue logic, closing the perception→action loop in simulation. Its vocabulary:
+demo rig, sim node, sim env adapter, sim server. Read <a href="demo/design.html">demo</a>.</p>
 </div>
 </article>
 </div>

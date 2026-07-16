@@ -1169,6 +1169,16 @@ The full run configuration and numbers are recorded in
 <code>finetune_job/parity_gate/parity_gate_report.json</code>.</p>
 </div>
 </div>
+<div class="entry"><div class="entry-head"><span class="badges"><span class="badge build">build</span> <span class="since">since 2026-07-16</span></span></div>
+<div class="body">
+<p>The <code>InferenceServer</code> (component 01.5) — the named GenServer wrapping the
+emily-native adapter (01.2) so it answers <code>infer_action</code> in-process or across a
+BEAM cluster — is designed, not built. First remote caller is the
+<a href="../demo/design.html">demo</a> context's <a href="../demo/CONTEXT.md#term-sim-node">sim node</a>.
+See
+<a href="../../adr/0010-beam-distribution-orthogonal-to-infer-action-port.md#adr-0010">ADR-0010</a>.</p>
+</div>
+</div>
 </div>
 <h2 id="01-components"><span class="secno">01</span> · Components</h2>
 <div class="cards cols-2">
@@ -1208,6 +1218,16 @@ Identical episodes-in/weights-out contract as the Python adapter, training
 loop reimplemented against <code>Nx.Defn.value_and_grad</code> directly on 01.2's
 hand-written forward pass, with <code>Polaris</code> for the optimizer. The intended
 target, conditional on task-performance parity. See 01.4.</p>
+</div>
+</article>
+<article class="card" id="inferenceserver-elixir-native-lens-composition">
+<div class="entry-head"><span class="label">InferenceServer (Elixir-native) </span><span class="badges"><span class="pill composition">composition</span></span></div>
+<div class="body">
+<p><strong>Own the emily-native adapter as a long-lived, cluster-addressable
+process.</strong> A named GenServer holding one loaded 01.2 <code>SmolVLA</code> model, answering
+<a href="CONTEXT.md#term-infer-action-port">infer_action</a> calls whether the caller is
+in-process or on a remote BEAM node. Adds no forward-pass logic — it is the
+process wrapper that makes 01.2 reachable across a cluster. See 01.5.</p>
 </div>
 </article>
 </div>
@@ -1481,6 +1501,43 @@ section above for the real run's numbers, and
 <a href="../../adr/0005-elixir-native-finetuning-conditional-retirement.md#adr-0005">ADR-0005</a>
 and
 <a href="../../adr/0009-offline-action-accuracy-as-task-success-proxy.md#adr-0009">ADR-0009</a>.</p>
+<h3 id="01-5-inferenceserver-elixir-native-responsibility-interface-invariants">01.5 InferenceServer (Elixir-native) — responsibility, interface, invariants</h3>
+<p><strong>Responsible for:</strong> loading one 01.2 <code>SmolVLA</code> model once and holding it as
+process state, then answering each
+<a href="CONTEXT.md#term-infer-action-port">infer_action</a> call against it — a named
+GenServer so a caller on any node in the BEAM cluster reaches it by name. This
+is the process that makes the in-process adapter (01.2) also a
+cluster-addressable service, without changing the adapter itself.</p>
+<p><strong>Interface:</strong></p>
+<pre><code class="language-elixir">InferenceServer.start_link(checkpoint_path) :: {:ok, pid()}   # loads the 01.2 model once
+InferenceServer.infer_action(server, observation) :: {:ok, ActionChunk.t()} | {:error, reason}
+# server may be a local name or {name, remote_node} — a plain GenServer.call target
+</code></pre>
+<p><strong>Interacts with:</strong> the 01.2 <code>SmolVLA.infer_action/4</code> it wraps (its only model
+dependency); callers reaching it through the
+<a href="CONTEXT.md#term-infer-action-port">infer_action port</a> — in-process on the same
+node, or across BEAM distribution from a remote node (the
+<a href="../demo/design.html">demo</a>'s <a href="../demo/CONTEXT.md#term-sim-node">sim node</a> is the
+first such remote caller). The
+cross-node case passes the <a href="CONTEXT.md#term-observation">observation</a> and
+returns the <a href="CONTEXT.md#term-action-chunk">action chunk</a> as native BEAM terms;
+no MessagePack or ZeroMQ is involved — that path stays exclusively the Python
+fallback's. See
+<a href="../../adr/0010-beam-distribution-orthogonal-to-infer-action-port.md#adr-0010">ADR-0010</a>.</p>
+<p><strong>Invariants held:</strong> the port contract is unchanged by where the caller sits —
+one <a href="CONTEXT.md#term-observation">observation</a> in, one
+<a href="CONTEXT.md#term-action-chunk">action chunk</a> out, the same <code>max_state_dim</code>
+fail-loud bound 01.1 and 01.2 hold, honored identically for a local and a
+remote call. Distribution is a topology axis orthogonal to the port, not a
+third adapter (ADR-0010).</p>
+<p><strong>Fails:</strong> the model loads once at <code>start_link</code> — a bad checkpoint fails there,
+loud and local, exactly as 01.2's <code>load</code> does, never a lazily-half-loaded
+server. A malformed observation fails the same <code>max_state_dim</code> check before the
+forward pass. A remote caller that loses the cluster connection sees a standard
+distributed <code>GenServer.call</code> timeout/error — the server itself never blocks
+waiting on a dead caller, and the calling
+<a href="../control-loop/design.html">ControlLoop</a> owns what a failed call means for the
+tick (component 01.1 there).</p>
 <footer class="colophon">This document owns the model-runtime components; CONTEXT owns the terms; ADRs own the rationale; the root indexes both contexts.</footer>
 </body>
 </html>

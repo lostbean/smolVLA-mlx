@@ -131,6 +131,15 @@ The full run configuration and numbers are recorded in
 `finetune_job/parity_gate/parity_gate_report.json`.
 :::
 
+:::pending {kind=build since=2026-07-16}
+The `InferenceServer` (component 01.5) — the named GenServer wrapping the
+emily-native adapter (01.2) so it answers `infer_action` in-process or across a
+BEAM cluster — is designed, not built. First remote caller is the
+[demo](../demo/design.md) context's [sim node](../demo/CONTEXT.md#term-sim-node).
+See
+[ADR-0010](../../adr/0010-beam-distribution-orthogonal-to-infer-action-port.md#adr-0010).
+:::
+
 ## 01 Components
 
 :::cards {cols=2}
@@ -164,6 +173,14 @@ Identical episodes-in/weights-out contract as the Python adapter, training
 loop reimplemented against `Nx.Defn.value_and_grad` directly on 01.2's
 hand-written forward pass, with `Polaris` for the optimizer. The intended
 target, conditional on task-performance parity. See 01.4.
+
+### InferenceServer (Elixir-native) `lens:composition`
+
+**Own the emily-native adapter as a long-lived, cluster-addressable
+process.** A named GenServer holding one loaded 01.2 `SmolVLA` model, answering
+[infer_action](CONTEXT.md#term-infer-action-port) calls whether the caller is
+in-process or on a remote BEAM node. Adds no forward-pass logic — it is the
+process wrapper that makes 01.2 reachable across a cluster. See 01.5.
 :::
 
 ### 01.1 SmolVLAModel (Python) — responsibility, interface, invariants
@@ -446,3 +463,47 @@ section above for the real run's numbers, and
 [ADR-0005](../../adr/0005-elixir-native-finetuning-conditional-retirement.md#adr-0005)
 and
 [ADR-0009](../../adr/0009-offline-action-accuracy-as-task-success-proxy.md#adr-0009).
+
+### 01.5 InferenceServer (Elixir-native) — responsibility, interface, invariants
+
+**Responsible for:** loading one 01.2 `SmolVLA` model once and holding it as
+process state, then answering each
+[infer_action](CONTEXT.md#term-infer-action-port) call against it — a named
+GenServer so a caller on any node in the BEAM cluster reaches it by name. This
+is the process that makes the in-process adapter (01.2) also a
+cluster-addressable service, without changing the adapter itself.
+
+**Interface:**
+```elixir
+InferenceServer.start_link(checkpoint_path) :: {:ok, pid()}   # loads the 01.2 model once
+InferenceServer.infer_action(server, observation) :: {:ok, ActionChunk.t()} | {:error, reason}
+# server may be a local name or {name, remote_node} — a plain GenServer.call target
+```
+
+**Interacts with:** the 01.2 `SmolVLA.infer_action/4` it wraps (its only model
+dependency); callers reaching it through the
+[infer_action port](CONTEXT.md#term-infer-action-port) — in-process on the same
+node, or across BEAM distribution from a remote node (the
+[demo](../demo/design.md)'s [sim node](../demo/CONTEXT.md#term-sim-node) is the
+first such remote caller). The
+cross-node case passes the [observation](CONTEXT.md#term-observation) and
+returns the [action chunk](CONTEXT.md#term-action-chunk) as native BEAM terms;
+no MessagePack or ZeroMQ is involved — that path stays exclusively the Python
+fallback's. See
+[ADR-0010](../../adr/0010-beam-distribution-orthogonal-to-infer-action-port.md#adr-0010).
+
+**Invariants held:** the port contract is unchanged by where the caller sits —
+one [observation](CONTEXT.md#term-observation) in, one
+[action chunk](CONTEXT.md#term-action-chunk) out, the same `max_state_dim`
+fail-loud bound 01.1 and 01.2 hold, honored identically for a local and a
+remote call. Distribution is a topology axis orthogonal to the port, not a
+third adapter (ADR-0010).
+
+**Fails:** the model loads once at `start_link` — a bad checkpoint fails there,
+loud and local, exactly as 01.2's `load` does, never a lazily-half-loaded
+server. A malformed observation fails the same `max_state_dim` check before the
+forward pass. A remote caller that loses the cluster connection sees a standard
+distributed `GenServer.call` timeout/error — the server itself never blocks
+waiting on a dead caller, and the calling
+[ControlLoop](../control-loop/design.md) owns what a failed call means for the
+tick (component 01.1 there).

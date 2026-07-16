@@ -1,5 +1,24 @@
-Status: ready-for-agent
+Status: ready-for-human
 Category: enhancement
+
+## Resolution
+
+[AI-authored] Built and verified 2026-07-16. The full-scale emily-native forward
+pass is present (`lib/smol_vla.ex` + `lib/smol_vla/*`). Acceptance verified:
+(#2) `ControlLoop` runs unmodified against `:emily_native` — the real-checkpoint
+end-to-end test `test/smol_vla/control_loop_integration_test.exs` passes
+(`RUN_SMOLVLA_INTEGRATION_CHECK=1 mix test ... --include real_checkpoint` — 1
+test, 0 failures), starting a real `ControlLoop` wired to a real `SmolVLA.t()`
+through `SmolVLA.Adapter`; the `{:not_yet_implemented, :emily_native}` unit test
+asserts only the fail-loud default for a *bare* `:emily_native` with no adapter
+supplied, not an unbuilt adapter. (#1) Conformance is backed by
+`test/smol_vla_test.exs`, `expert_test.exs`, `vision_test.exs` and the parity
+artifact `finetune_job/parity_gate/parity_gate_report.json`. **Caveat:** the
+model-runtime ledger records conformance at **0.65% mean relative error** —
+"equivalent within tolerance," not bit-exact; this tolerance was accepted at
+design time (ADR-0003 / model-runtime component 01.2). (#3) Latency is measured
+by `bench/warm_latency.exs` (~186ms warm, recorded in the ledger). (#4) The
+fail-loud shape check is present. Awaiting human verify-and-close.
 
 ## Parent
 
