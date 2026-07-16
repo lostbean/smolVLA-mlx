@@ -81,7 +81,28 @@ defmodule SmolVLA.Vision do
   (image_size / patch_size)^2 / scale_factor^2`.
   """
   @spec forward(map(), Config.t(), Nx.Tensor.t()) :: Nx.Tensor.t()
-  def forward(weights, %Config{} = config, pixel_values) do
+  deftransform forward(weights, %Config{} = config, pixel_values) do
+    forward_traced(weights, pixel_values, config: config)
+  end
+
+  # The traced entry point, mirroring `SmolVLA.Expert.forward`'s own
+  # pattern: called eagerly (no enclosing defn), it jits the WHOLE
+  # 12-layer SigLIP tower + connector into a SINGLE Nx.Defn graph -- one
+  # Emily.Compiler native replay per camera instead of hundreds of
+  # separate eager NIF dispatches (op-by-op `def`/`defp`). `config` rides
+  # in `opts` because defn positional arguments must be tensors or
+  # containers, and Config is a plain struct of scalars; as a
+  # compile-time option it also keys the jit cache, so repeated calls
+  # with the same shapes/config replay one compiled program.
+  defn forward_traced(weights, pixel_values, opts \\ []) do
+    forward_stack(weights, pixel_values, opts[:config])
+  end
+
+  # Plain-Elixir stack construction, run at trace time inside the single
+  # traced graph (deftransformp): the 12-layer encoder loop unrolls at
+  # compile time and the string-keyed weight lookups resolve against the
+  # traced weights container.
+  deftransformp forward_stack(weights, pixel_values, %Config{} = config) do
     conv_w = weights["vision_encoder.vision_model.embeddings.patch_embedding.weight"]
 
     hidden =
@@ -117,7 +138,7 @@ defmodule SmolVLA.Vision do
   # Patch + position embeddings.
   # ------------------------------------------------------------------
 
-  defp embeddings(weights, config, pixel_values) do
+  deftransformp embeddings(weights, config, pixel_values) do
     patch_size = config.vision.patch_size
     hidden_size = config.vision.hidden_size
 
@@ -159,7 +180,7 @@ defmodule SmolVLA.Vision do
   # Encoder layer: pre-LN self-attention + pre-LN MLP(GELU-precise).
   # ------------------------------------------------------------------
 
-  defp encoder_layer(weights, config, layer_idx, hidden) do
+  deftransformp encoder_layer(weights, config, layer_idx, hidden) do
     prefix = "vision_encoder.vision_model.encoder.layers.#{layer_idx}."
     num_heads = config.vision.num_attention_heads
     head_dim = div(config.vision.hidden_size, num_heads)
@@ -241,13 +262,13 @@ defmodule SmolVLA.Vision do
   # Pixel-shuffle connector.
   # ------------------------------------------------------------------
 
-  defp connector(weights, image_hidden_states) do
+  deftransformp connector(weights, image_hidden_states) do
     proj_w = weights["vision_encoder.connector.modality_projection.weight"]
     shuffled = pixel_shuffle(image_hidden_states, 4)
     linear_no_bias(shuffled, proj_w)
   end
 
-  defp pixel_shuffle(x, scale_factor) do
+  deftransformp pixel_shuffle(x, scale_factor) do
     {bsz, seq, embed_dim} = Nx.shape(x)
     side = trunc(:math.sqrt(seq))
 
@@ -273,7 +294,7 @@ defmodule SmolVLA.Vision do
   # Shared numeric helpers.
   # ------------------------------------------------------------------
 
-  defp linear(x, w, b) do
+  deftransformp linear(x, w, b) do
     y = linear_no_bias(x, w)
     Nx.add(y, b)
   end
@@ -282,16 +303,16 @@ defmodule SmolVLA.Vision do
     Nx.dot(x, [-1], w, [-1])
   end
 
-  defp fused_layer_norm(x, weight, bias, opts) do
+  deftransformp fused_layer_norm(x, weight, bias, opts) do
     Emily.Fast.layer_norm(x, weight, bias, opts)
   end
 
-  defp split_heads(x, num_heads, head_dim) do
+  deftransformp split_heads(x, num_heads, head_dim) do
     {b, l, _} = Nx.shape(x)
     x |> Nx.reshape({b, l, num_heads, head_dim}) |> Nx.transpose(axes: [0, 2, 1, 3])
   end
 
-  defp merge_heads(x) do
+  deftransformp merge_heads(x) do
     {b, h, l, d} = Nx.shape(x)
     x |> Nx.transpose(axes: [0, 2, 1, 3]) |> Nx.reshape({b, l, h * d})
   end
