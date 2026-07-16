@@ -250,48 +250,80 @@ Python implementation (component 01.1) rather than a NumPy oracle —
 observation, well inside the 2% budget the errors' own bf16-drift character
 justifies (see this component's test suite for the full reasoning). This
 confirms the mechanism holds at real scale, not just the prototype's stand-in.
-**Latency:** measured warm latency is ~634ms median (2026-07-15, 5 samples,
-606.9–641.0ms) after the dispatch-tax fix landed — down from the ~1.2s that
-motivated it (see the resolved note below). The real deadline this must
-clear is not a flat 100ms per call — `ControlLoop` (01.1) fires
-`infer_action` asynchronously via a `Task`, never blocking the tick loop, so
-the actual constraint is *time to complete before the
+**Latency:** measured warm latency is ~186ms median (2026-07-16, 9 samples,
+184.3–189.3ms) after the latency-gap work landed — now *below* the Python
+adapter's own ~327ms (see the cross-runtime table below), down from the
+~634ms recorded after the first dispatch-tax fix and the ~1.2s before it.
+The real deadline this must clear is not a flat 100ms per call —
+`ControlLoop` (01.1) fires `infer_action` asynchronously via a `Task`,
+never blocking the tick loop, so the actual constraint is *time to complete
+before the
 [queue](../control-loop/CONTEXT.md#term-action-queue) drains from the
 [low-water threshold](../control-loop/CONTEXT.md#term-low-water-threshold)
 to empty* — at this system's own 5Hz-class target tick rate and a
 25-action threshold (half the 50-action chunk size), that budget is ~5s,
-not 100ms.
-Measured against that real bar, ~634ms has ample headroom (~8×), and the
-dispatch-tax fix (below) roughly halved it. Root cause of the earlier
-slowness: the port dispatched each layer/op as its own
-`Emily.Fast`/`Nx.Defn` call from Elixir orchestration rather than one
-whole-model traced `defn` graph, so `Emily.Compiler`'s single-NIF
-whole-graph replay speedup never applied. The 16-layer Expert stack is now
-traced as one `defn` graph per Euler step (`SmolVLA.Expert.forward/6` is a
-`deftransform` shim over a `defn` entry point), so that replay speedup now
-applies. See the [pending ledger](../design.md).
+not 100ms. Measured against that real bar, ~186ms has ~27× headroom.
 
-**Cross-runtime comparison (updated 2026-07-15, post-fix):** the Python
-adapter (01.1) still does the identical `infer_action` work faster, but the
-gap narrowed sharply after the dispatch-tax fix (below) roughly halved the
-Elixir-native latency:
+The gap to Python closed across four measured optimizations, each in its
+own commit and each parity-neutral (end-to-end MRE held at 0.646% / 0.0081
+max abs diff throughout — byte-identical to the pre-optimization figure):
+
+1. **Resize sample geometry as tensor arithmetic.** `prepare_images`'s
+   bilinear interpolation built four 262,144-element Elixir lists per call
+   (the outer-product gather grid) and paid a host→tensor conversion for
+   each; replaced with per-axis floor/ceil index + weight tensors computed
+   once per `{in, out}` size pair (memoized, built in f64 on
+   `Nx.BinaryBackend` so the floor/clamp/weight arithmetic stays
+   bit-identical to the old float64 path) plus a separable
+   `Nx.take`-on-axis-0-then-1 gather. The `[0,255]` range heuristic's host
+   round-trip (`Nx.to_number(Nx.reduce_max(...))`) became an on-device
+   `Nx.select`. ~137ms.
+2. **Skip the SigLIP tower for zero-masked fake cameras.** The checkpoint
+   declares 3 camera slots; slots 2–3 get zero images with `pad_mask=false`
+   yet each ran the full 12-layer tower to produce tokens the pad mask
+   excludes from every attention row. Emit a zeros embedding of the exact
+   shape/dtype instead. ~106ms.
+3. **Prefill/step KV cache across Euler steps.** The mask guarantees the
+   backbone branch never attends the suffix, so its 16-layer trajectory —
+   and the per-layer key/value tensors the suffix attends — are identical
+   across all 10 Euler steps. `SmolVLA.Expert` splits into a `prefill` pass
+   (run once: backbone trajectory + per-layer cached k/v) and a `step` pass
+   (run 10×: suffix-only queries attending the cached keys), mirroring
+   lerobot's `fill_kv_cache`. `Expert.forward/6` is unchanged for the
+   training path. ~168ms.
+4. **Compile the vision tower.** `SmolVLA.Vision` ran its 12 encoder layers
+   eagerly (op-by-op `def`/`defp` dispatch); converted to the same
+   `deftransform` shim → `defn` entry → `deftransformp` stack pattern
+   `Expert.forward` uses, verified to lower fully native. ~23ms.
+
+An earlier `Emily.Compiler` `fuse: true` experiment gave ~8% against the
+original large per-step graph but was reverted: once the KV-cache split
+(3) and the vision compile (4) shrank the per-step work, it became
+neutral-to-slightly-slower and it perturbs f32 parity, so the shipped
+config omits it. See the [pending ledger](../design.md).
+
+**Cross-runtime comparison (updated 2026-07-16, post-latency-gap-work):**
+the Elixir-native adapter (01.2) now does the identical `infer_action` work
+*faster* than the Python reference (01.1), after the four optimizations
+above closed and then overtook the earlier gap:
 
 | | Python (01.1, direct MLX) | Elixir-native (01.2, emily/`Nx.Defn`) | Gap |
 | --- | --- | --- | --- |
-| Warm latency, one `infer_action` call | ~327–331ms | ~634ms median (5 samples, 606.9–641.0ms) | Elixir ~1.9× slower |
-| Throughput | ~3.0 actions/sec | ~1.6 actions/sec | Elixir ~53% of Python's rate |
-| Against the real ~5s deadline (derived above, not the stale 100ms figure) | ~15× headroom | ~8× headroom | both clear it; Python by more |
+| Warm latency, one `infer_action` call | ~327–331ms | ~186ms median (9 samples, 184.3–189.3ms) | Elixir ~1.8× faster |
+| Throughput | ~3.0 actions/sec | ~5.4 actions/sec | Elixir ~1.8× Python's rate |
+| Against the real ~5s deadline (derived above, not the stale 100ms figure) | ~15× headroom | ~27× headroom | both clear it; Elixir by more |
 
-Both adapters clear the real deadline derived above — this is a real,
-measured gap, not a blocking one, and the Elixir side halved its latency
-(from ~1.2s) once the dispatch tax was removed.
+Both adapters clear the real deadline derived above; the Elixir side is now
+the faster of the two, having cut its warm latency from ~1.2s (pre-fix) to
+~634ms (dispatch-tax fix) to ~186ms (the latency-gap work above), parity
+unchanged at 0.646% mean relative error / 0.0081 max abs diff throughout.
 
 :::info {title="Dispatch-tax fix: unblocked and landed (2026-07-15)"}
-Root-causing this gap (see above) motivated the fix: fusing the per-op
+The first step of closing the gap was fusing the per-op
 `Emily.Fast`/`Nx.Defn` dispatch into one traced `defn` graph so
 `Emily.Compiler`'s single-NIF whole-graph replay applies instead of eager
 per-op dispatch from Elixir orchestration. This was **resolved**, not just
-attempted. The 16-layer Expert stack is now traced as one `defn` graph per
+attempted. The 16-layer Expert stack is traced as one `defn` graph per
 Euler step (`SmolVLA.Expert.forward/6` converted from `def` to a
 `deftransform` shim over a `defn` entry point), and the `emily` dependency
 is pinned to the fork
@@ -305,10 +337,11 @@ requires the *callee itself* to be `defn`-defined — so the kernels could not
 be composed inside a whole-graph `defn`. The fork branch resolves this,
 letting the whole Expert stack trace as a single graph that
 `Emily.Compiler` replays as one NIF call rather than per-op eager dispatch.
-Measured effect: warm `infer_action/4` dropped from ~1.2s to ~634ms median
-(~1.9× the Python adapter, down from ~3.7×), numerical parity unchanged at
-0.646% mean relative error / 0.0081 max abs diff against the Python
-reference, inside the 2% budget.
+Measured effect at the time: warm `infer_action/4` dropped from ~1.2s to
+~634ms median. The subsequent latency-gap work (the four optimizations
+above) then took it to ~186ms — below the Python adapter — with numerical
+parity unchanged at 0.646% mean relative error / 0.0081 max abs diff
+against the Python reference, inside the 2% budget.
 :::
 
 ### 01.3 FineTuneJob (Python) — responsibility, interface, invariants

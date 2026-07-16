@@ -1280,30 +1280,60 @@ Python implementation (component 01.1) rather than a NumPy oracle —
 observation, well inside the 2% budget the errors' own bf16-drift character
 justifies (see this component's test suite for the full reasoning). This
 confirms the mechanism holds at real scale, not just the prototype's stand-in.
-<strong>Latency:</strong> measured warm latency is ~634ms median (2026-07-15, 5 samples,
-606.9–641.0ms) after the dispatch-tax fix landed — down from the ~1.2s that
-motivated it (see the resolved note below). The real deadline this must
-clear is not a flat 100ms per call — <code>ControlLoop</code> (01.1) fires
-<code>infer_action</code> asynchronously via a <code>Task</code>, never blocking the tick loop, so
-the actual constraint is <em>time to complete before the
+<strong>Latency:</strong> measured warm latency is ~186ms median (2026-07-16, 9 samples,
+184.3–189.3ms) after the latency-gap work landed — now <em>below</em> the Python
+adapter's own ~327ms (see the cross-runtime table below), down from the
+~634ms recorded after the first dispatch-tax fix and the ~1.2s before it.
+The real deadline this must clear is not a flat 100ms per call —
+<code>ControlLoop</code> (01.1) fires <code>infer_action</code> asynchronously via a <code>Task</code>,
+never blocking the tick loop, so the actual constraint is <em>time to complete
+before the
 <a href="../control-loop/CONTEXT.md#term-action-queue">queue</a> drains from the
 <a href="../control-loop/CONTEXT.md#term-low-water-threshold">low-water threshold</a>
 to empty</em> — at this system's own 5Hz-class target tick rate and a
 25-action threshold (half the 50-action chunk size), that budget is ~5s,
-not 100ms.
-Measured against that real bar, ~634ms has ample headroom (~8×), and the
-dispatch-tax fix (below) roughly halved it. Root cause of the earlier
-slowness: the port dispatched each layer/op as its own
-<code>Emily.Fast</code>/<code>Nx.Defn</code> call from Elixir orchestration rather than one
-whole-model traced <code>defn</code> graph, so <code>Emily.Compiler</code>'s single-NIF
-whole-graph replay speedup never applied. The 16-layer Expert stack is now
-traced as one <code>defn</code> graph per Euler step (<code>SmolVLA.Expert.forward/6</code> is a
-<code>deftransform</code> shim over a <code>defn</code> entry point), so that replay speedup now
-applies. See the <a href="../design.html">pending ledger</a>.</p>
-<p><strong>Cross-runtime comparison (updated 2026-07-15, post-fix):</strong> the Python
-adapter (01.1) still does the identical <code>infer_action</code> work faster, but the
-gap narrowed sharply after the dispatch-tax fix (below) roughly halved the
-Elixir-native latency:</p>
+not 100ms. Measured against that real bar, ~186ms has ~27× headroom.</p>
+<p>The gap to Python closed across four measured optimizations, each in its
+own commit and each parity-neutral (end-to-end MRE held at 0.646% / 0.0081
+max abs diff throughout — byte-identical to the pre-optimization figure):</p>
+<ol>
+<li><strong>Resize sample geometry as tensor arithmetic.</strong> <code>prepare_images</code>'s
+bilinear interpolation built four 262,144-element Elixir lists per call
+(the outer-product gather grid) and paid a host→tensor conversion for
+each; replaced with per-axis floor/ceil index + weight tensors computed
+once per <code>{in, out}</code> size pair (memoized, built in f64 on
+<code>Nx.BinaryBackend</code> so the floor/clamp/weight arithmetic stays
+bit-identical to the old float64 path) plus a separable
+<code>Nx.take</code>-on-axis-0-then-1 gather. The <code>[0,255]</code> range heuristic's host
+round-trip (<code>Nx.to_number(Nx.reduce_max(...))</code>) became an on-device
+<code>Nx.select</code>. ~137ms.</li>
+<li><strong>Skip the SigLIP tower for zero-masked fake cameras.</strong> The checkpoint
+declares 3 camera slots; slots 2–3 get zero images with <code>pad_mask=false</code>
+yet each ran the full 12-layer tower to produce tokens the pad mask
+excludes from every attention row. Emit a zeros embedding of the exact
+shape/dtype instead. ~106ms.</li>
+<li><strong>Prefill/step KV cache across Euler steps.</strong> The mask guarantees the
+backbone branch never attends the suffix, so its 16-layer trajectory —
+and the per-layer key/value tensors the suffix attends — are identical
+across all 10 Euler steps. <code>SmolVLA.Expert</code> splits into a <code>prefill</code> pass
+(run once: backbone trajectory + per-layer cached k/v) and a <code>step</code> pass
+(run 10×: suffix-only queries attending the cached keys), mirroring
+lerobot's <code>fill_kv_cache</code>. <code>Expert.forward/6</code> is unchanged for the
+training path. ~168ms.</li>
+<li><strong>Compile the vision tower.</strong> <code>SmolVLA.Vision</code> ran its 12 encoder layers
+eagerly (op-by-op <code>def</code>/<code>defp</code> dispatch); converted to the same
+<code>deftransform</code> shim → <code>defn</code> entry → <code>deftransformp</code> stack pattern
+<code>Expert.forward</code> uses, verified to lower fully native. ~23ms.</li>
+</ol>
+<p>An earlier <code>Emily.Compiler</code> <code>fuse: true</code> experiment gave ~8% against the
+original large per-step graph but was reverted: once the KV-cache split
+(3) and the vision compile (4) shrank the per-step work, it became
+neutral-to-slightly-slower and it perturbs f32 parity, so the shipped
+config omits it. See the <a href="../design.html">pending ledger</a>.</p>
+<p><strong>Cross-runtime comparison (updated 2026-07-16, post-latency-gap-work):</strong>
+the Elixir-native adapter (01.2) now does the identical <code>infer_action</code> work
+<em>faster</em> than the Python reference (01.1), after the four optimizations
+above closed and then overtook the earlier gap:</p>
 <table>
 <thead>
 <tr>
@@ -1317,34 +1347,35 @@ Elixir-native latency:</p>
 <tr>
 <td>Warm latency, one <code>infer_action</code> call</td>
 <td>~327–331ms</td>
-<td>~634ms median (5 samples, 606.9–641.0ms)</td>
-<td>Elixir ~1.9× slower</td>
+<td>~186ms median (9 samples, 184.3–189.3ms)</td>
+<td>Elixir ~1.8× faster</td>
 </tr>
 <tr>
 <td>Throughput</td>
 <td>~3.0 actions/sec</td>
-<td>~1.6 actions/sec</td>
-<td>Elixir ~53% of Python's rate</td>
+<td>~5.4 actions/sec</td>
+<td>Elixir ~1.8× Python's rate</td>
 </tr>
 <tr>
 <td>Against the real ~5s deadline (derived above, not the stale 100ms figure)</td>
 <td>~15× headroom</td>
-<td>~8× headroom</td>
-<td>both clear it; Python by more</td>
+<td>~27× headroom</td>
+<td>both clear it; Elixir by more</td>
 </tr>
 </tbody>
 </table>
-<p>Both adapters clear the real deadline derived above — this is a real,
-measured gap, not a blocking one, and the Elixir side halved its latency
-(from ~1.2s) once the dispatch tax was removed.</p>
+<p>Both adapters clear the real deadline derived above; the Elixir side is now
+the faster of the two, having cut its warm latency from ~1.2s (pre-fix) to
+~634ms (dispatch-tax fix) to ~186ms (the latency-gap work above), parity
+unchanged at 0.646% mean relative error / 0.0081 max abs diff throughout.</p>
 <div class="callout info">
 <div class="entry-head"><span class="label">Dispatch-tax fix: unblocked and landed (2026-07-15)</span></div>
 <div class="body">
-<p>Root-causing this gap (see above) motivated the fix: fusing the per-op
+<p>The first step of closing the gap was fusing the per-op
 <code>Emily.Fast</code>/<code>Nx.Defn</code> dispatch into one traced <code>defn</code> graph so
 <code>Emily.Compiler</code>'s single-NIF whole-graph replay applies instead of eager
 per-op dispatch from Elixir orchestration. This was <strong>resolved</strong>, not just
-attempted. The 16-layer Expert stack is now traced as one <code>defn</code> graph per
+attempted. The 16-layer Expert stack is traced as one <code>defn</code> graph per
 Euler step (<code>SmolVLA.Expert.forward/6</code> converted from <code>def</code> to a
 <code>deftransform</code> shim over a <code>defn</code> entry point), and the <code>emily</code> dependency
 is pinned to the fork
@@ -1357,10 +1388,11 @@ requires the <em>callee itself</em> to be <code>defn</code>-defined — so the k
 be composed inside a whole-graph <code>defn</code>. The fork branch resolves this,
 letting the whole Expert stack trace as a single graph that
 <code>Emily.Compiler</code> replays as one NIF call rather than per-op eager dispatch.
-Measured effect: warm <code>infer_action/4</code> dropped from ~1.2s to ~634ms median
-(~1.9× the Python adapter, down from ~3.7×), numerical parity unchanged at
-0.646% mean relative error / 0.0081 max abs diff against the Python
-reference, inside the 2% budget.</p>
+Measured effect at the time: warm <code>infer_action/4</code> dropped from ~1.2s to
+~634ms median. The subsequent latency-gap work (the four optimizations
+above) then took it to ~186ms — below the Python adapter — with numerical
+parity unchanged at 0.646% mean relative error / 0.0081 max abs diff
+against the Python reference, inside the 2% budget.</p>
 </div>
 </div>
 <h3 id="01-3-finetunejob-python-responsibility-interface-invariants">01.3 FineTuneJob (Python) — responsibility, interface, invariants</h3>
