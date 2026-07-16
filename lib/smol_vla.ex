@@ -458,12 +458,16 @@ defmodule SmolVLA do
 
     arr = to_hwc_f32(image)
 
-    arr =
-      if Nx.to_number(Nx.reduce_max(arr)) > 1.5 do
-        Nx.divide(arr, 255.0)
-      else
-        arr
-      end
+    # [0,255]-vs-[0,1] range heuristic, computed ON-DEVICE: a
+    # `Nx.to_number(Nx.reduce_max(arr))` here would force a full
+    # device->host round-trip mid-pipeline (~tens of ms warm) purely to
+    # branch on a scalar. Instead pick the divisor as a tensor
+    # (`Nx.select` on the same reduce_max) and divide unconditionally --
+    # 255.0 when any pixel exceeds 1.5, else 1.0 (a no-op divide). Same
+    # heuristic, no host sync.
+    max_val = Nx.reduce_max(arr)
+    divisor = Nx.select(Nx.greater(max_val, 1.5), 255.0, 1.0)
+    arr = Nx.divide(arr, divisor)
 
     pixel_values = Preprocessing.resize_with_pad(arr, image_size, image_size, 0.0)
     # SigLIP expects [-1, 1].

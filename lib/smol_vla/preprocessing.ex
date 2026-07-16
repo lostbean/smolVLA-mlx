@@ -118,22 +118,39 @@ defmodule SmolVLA.Preprocessing do
   # Bilinear interpolation, align_corners=false (`half_pixel_centers`),
   # matching `interpolate.py`'s `bilinear_interpolate` for the `(H, W,
   # C)` case (rank 3, `extra_dims = 1`).
+  #
+  # The per-axis sample geometry (floor/ceil indices + interpolation
+  # weights) depends ONLY on the {in, out} size pair, not on pixel
+  # values, so it is built once per pair as small 1-D tensors (length
+  # new_h / new_w, not the new_h*new_w product) and memoized in the
+  # process dictionary. The gather itself is separable -- two sequential
+  # `Nx.take`s (row axis, then column axis) reproduce the outer-product
+  # `image[row_floor][:, col_floor]` grid exactly -- so no giant paired
+  # index list is ever materialized. This replaces the previous version,
+  # which built four 262,144-element Elixir lists per call and paid a
+  # full host->tensor conversion for each (~130ms warm).
   defp bilinear_interpolate(image, new_height, new_width) do
     {h_in, w_in, _channels} = Nx.shape(image)
 
-    row_positions = sample_positions(new_height, h_in)
-    col_positions = sample_positions(new_width, w_in)
+    # Place the small index/weight tensors on the SAME backend as the
+    # image (they are memoized as backend-agnostic host tensors), so the
+    # separable-gather / blend ops below never straddle two backends --
+    # `prepare_images` runs on Emily, but the preprocessing parity test
+    # runs on the default (Binary) backend.
+    backend = image_backend(image)
 
-    row_floor = Enum.map(row_positions, &max(min(floor(&1), h_in - 1), 0))
-    row_ceil = Enum.map(row_positions, &max(min(floor(&1) + 1, h_in - 1), 0))
-    col_floor = Enum.map(col_positions, &max(min(floor(&1), w_in - 1), 0))
-    col_ceil = Enum.map(col_positions, &max(min(floor(&1) + 1, w_in - 1), 0))
+    %{floor: row_floor, ceil: row_ceil, weight: row_weight} =
+      axis_sample_geometry(new_height, h_in, backend)
 
-    row_weight = Enum.zip_with(row_positions, row_floor, fn p, f -> p - f end)
-    col_weight = Enum.zip_with(col_positions, col_floor, fn p, f -> p - f end)
+    %{floor: col_floor, ceil: col_ceil, weight: col_weight} =
+      axis_sample_geometry(new_width, w_in, backend)
 
-    gather = fn row_indices, col_indices ->
-      gather_pixels(image, row_indices, col_indices, new_height, new_width)
+    # Separable gather: `Nx.take` on axis 0 then axis 1 selects
+    # `image[row_idx][:, col_idx]`, matching the old paired-index gather.
+    gather = fn row_idx, col_idx ->
+      image
+      |> Nx.take(row_idx, axis: 0)
+      |> Nx.take(col_idx, axis: 1)
     end
 
     top_left = gather.(row_floor, col_floor)
@@ -141,8 +158,8 @@ defmodule SmolVLA.Preprocessing do
     bottom_left = gather.(row_ceil, col_floor)
     bottom_right = gather.(row_ceil, col_ceil)
 
-    r_w = row_weight |> Nx.tensor(type: :f32) |> Nx.reshape({new_height, 1, 1})
-    c_w = col_weight |> Nx.tensor(type: :f32) |> Nx.reshape({1, new_width, 1})
+    r_w = Nx.reshape(row_weight, {new_height, 1, 1})
+    c_w = Nx.reshape(col_weight, {1, new_width, 1})
 
     one_minus_r = Nx.subtract(1.0, r_w)
     one_minus_c = Nx.subtract(1.0, c_w)
@@ -154,43 +171,70 @@ defmodule SmolVLA.Preprocessing do
     |> Nx.add(Nx.multiply(bottom_right, Nx.multiply(r_w, c_w)))
   end
 
-  defp sample_positions(1, _in_size), do: [0.0]
+  # Floor/ceil gather indices (s64) and interpolation weights (f32) for
+  # one resize axis, memoized per {new_size, in_size} pair.
+  #
+  # The sample positions and weights are computed on Nx.BinaryBackend in
+  # f64 -- NOT on the device (Metal has no f64) and NOT lazily as a
+  # device graph -- specifically so the arithmetic is bit-identical to
+  # the previous plain-Elixir float64 version: `(i+0.5)*in/out - 0.5`,
+  # `floor`, clamp, and `pos - clamped_floor` all in float64, so the same
+  # floor()/clamp decisions and the same f32-rounded weights come out.
+  # Only after the f64 math are the small (length-new_size) index and
+  # weight tensors transferred to the device.
+  defp axis_sample_geometry(new_size, in_size, backend) do
+    key = {__MODULE__, :axis_geometry, new_size, in_size}
 
-  defp sample_positions(new_size, in_size) do
-    for i <- 0..(new_size - 1) do
-      (i + 0.5) * in_size / new_size - 0.5
-    end
+    geometry =
+      case Process.get(key) do
+        nil ->
+          computed = compute_axis_sample_geometry(new_size, in_size)
+          Process.put(key, computed)
+          computed
+
+        cached ->
+          cached
+      end
+
+    %{
+      floor: Nx.backend_transfer(geometry.floor, backend),
+      ceil: Nx.backend_transfer(geometry.ceil, backend),
+      weight: Nx.backend_transfer(geometry.weight, backend)
+    }
   end
 
-  defp gather_pixels(image, row_indices, col_indices, new_height, new_width) do
-    {_h_in, _w_in, channels} = Nx.shape(image)
+  # The memoized geometry is held as backend-agnostic host (Binary)
+  # tensors; each use transfers its own small copy onto the caller's
+  # backend (`Nx.backend_transfer` on a Binary tensor copies rather than
+  # consuming the cached one).
+  defp compute_axis_sample_geometry(new_size, in_size) do
+    Nx.with_default_backend(Nx.BinaryBackend, fn ->
+      positions =
+        if new_size == 1 do
+          Nx.tensor([0.0], type: :f64)
+        else
+          # (i + 0.5) * in_size / new_size - 0.5, in f64.
+          Nx.iota({new_size}, type: :f64)
+          |> Nx.add(0.5)
+          |> Nx.multiply(in_size / new_size)
+          |> Nx.subtract(0.5)
+        end
 
-    row_grid =
-      for r <- row_indices, _c <- col_indices, do: r
+      raw_floor = Nx.floor(positions)
+      floor_idx = raw_floor |> Nx.clip(0, in_size - 1) |> Nx.as_type(:s64)
+      ceil_idx = raw_floor |> Nx.add(1.0) |> Nx.clip(0, in_size - 1) |> Nx.as_type(:s64)
 
-    col_grid =
-      for _r <- row_indices, c <- col_indices, do: c
+      # Weight uses the CLAMPED floor (`pos - clamped_floor`), matching
+      # the previous version exactly. Cast to f32 last, so the stored
+      # weight is the same f32 value the old code produced.
+      clamped_floor_f = Nx.as_type(floor_idx, :f64)
+      weight = Nx.subtract(positions, clamped_floor_f) |> Nx.as_type(:f32)
 
-    row_idx = Nx.tensor(row_grid, type: :s64)
-    col_idx = Nx.tensor(col_grid, type: :s64)
-
-    gathered =
-      Nx.take(image, row_idx, axis: 0)
-      |> gather_matching_col(col_idx, channels)
-
-    Nx.reshape(gathered, {new_height, new_width, channels})
+      %{floor: floor_idx, ceil: ceil_idx, weight: weight}
+    end)
   end
 
-  # `image[row_idx, col_idx]` fancy-indexing equivalent: after
-  # `Nx.take(image, row_idx, axis: 0)` (shape {N, W, C}), select
-  # `col_idx[i]` from row i's W axis, matching numpy/mlx advanced
-  # indexing (row_idx and col_idx paired elementwise).
-  defp gather_matching_col(rows_selected, col_idx, _channels) do
-    n = Nx.axis_size(col_idx, 0)
-
-    indices =
-      Nx.stack([Nx.iota({n}, type: :s64), col_idx], axis: 1)
-
-    Nx.gather(rows_selected, indices)
-  end
+  # The backend a tensor currently lives on, so freshly-built index /
+  # weight tensors can be placed alongside it.
+  defp image_backend(%Nx.Tensor{data: %backend_mod{}}), do: backend_mod
 end
