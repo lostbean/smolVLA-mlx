@@ -44,15 +44,7 @@ defmodule SmolVLATest do
 
   setup_all do
     Nx.global_default_backend({Emily.Backend, device: :gpu})
-    # `fuse: true` evals each traced forward in Emily.Compiler's
-    # `mx::compile`'d mode, fusing the elementwise runs the plain native
-    # replay leaves separate -- a small but free win on this
-    # GPU-launch-bound forward (~8% warm, measured), reassociating f32
-    # within a few ULP (parity MRE moves 0.6458% -> 0.6462%, far inside
-    # the 2% budget). This is the shipped inference-path config; the
-    # end-to-end parity test below exercises it exactly as a real
-    # `infer_action` caller would.
-    Nx.Defn.global_default_options(compiler: Emily.Compiler, fuse: true)
+    Nx.Defn.global_default_options(compiler: Emily.Compiler)
     :ok
   end
 

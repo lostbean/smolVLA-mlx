@@ -9,11 +9,13 @@
 #
 # Env knobs:
 #   BENCH_RUNS=N        number of timed runs (default 7)
-#   BENCH_FUSE=0        disable Emily.Compiler fuse: true (on by default,
-#                       matching the shipped inference-path config)
+#   BENCH_FUSE=1        enable Emily.Compiler fuse: true (off by default;
+#                       it helped the original large per-step graph but is
+#                       neutral-to-slightly-slower once the KV-cache split
+#                       and vision compile shrank the per-step work)
 
 runs = String.to_integer(System.get_env("BENCH_RUNS", "7"))
-fuse = System.get_env("BENCH_FUSE") != "0"
+fuse = System.get_env("BENCH_FUSE") == "1"
 
 Nx.global_default_backend({Emily.Backend, device: :gpu})
 
