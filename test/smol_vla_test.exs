@@ -165,10 +165,14 @@ defmodule SmolVLATest do
       elapsed_ms = elapsed_us / 1000
 
       # Real number, reported regardless of outcome (per this chunk's own
-      # acceptance criterion) -- NOT asserted against the 100ms budget,
-      # since the measured latency during development (~1.2-1.4s warm)
-      # is over budget; see the final chunk report for the full analysis
-      # (this is a real, structural finding, not a flaky-test situation).
+      # acceptance criterion) -- NOT asserted against the 100ms budget.
+      # After the latency-gap work (Nx.iota resize geometry, skipping the
+      # SigLIP tower for zero-masked fake cameras, a prefill/step KV cache
+      # across Euler steps, and compiling the vision tower) the measured
+      # warm latency is ~185-190ms -- well under the ~327ms Python
+      # reference, though still above the aspirational 100ms budget. The
+      # remaining floor is GPU-launch-bound per-step dispatch; see the
+      # bench (bench/warm_latency.exs) for the current figure.
       IO.puts(
         "\n  [SmolVLA latency] warm infer_action/4: #{Float.round(elapsed_ms, 1)}ms (100ms budget)"
       )
