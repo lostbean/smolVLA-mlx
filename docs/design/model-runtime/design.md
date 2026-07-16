@@ -315,13 +315,33 @@ end-to-end wall-clock is honest), the Elixir side via
 | | Python (01.1, direct MLX) | Elixir-native (01.2, emily/`Nx.Defn`) | Gap |
 | --- | --- | --- | --- |
 | Warm latency, one `infer_action` call | ~321ms median (9 samples, 319.1–345.3ms) | ~186ms median (9 samples, 184.3–189.3ms) | Elixir ~1.7× faster |
-| Throughput | ~3.1 actions/sec | ~5.4 actions/sec | Elixir ~1.7× Python's rate |
+| Inference rate (calls = images analyzed = chunks produced / sec) | ~3.1 /sec | ~5.4 /sec | Elixir ~1.7× Python's rate |
 | Against the real ~5s deadline (derived above, not the stale 100ms figure) | ~16× headroom | ~27× headroom | both clear it; Elixir by more |
 
 Both adapters clear the real deadline derived above; the Elixir side is now
 the faster of the two, having cut its warm latency from ~1.2s (pre-fix) to
 ~634ms (dispatch-tax fix) to ~186ms (the latency-gap work above), parity
 unchanged at 0.646% mean relative error / 0.0081 max abs diff throughout.
+
+**What the inference rate means for a robot (it is not the tick rate).**
+One `infer_action` call consumes ONE image and produces ONE chunk of
+`chunk_size` (50) actions via the 10-step denoising loop — so ~5.4 /sec is
+*images analyzed / action-chunks produced* per second, NOT individual robot
+moves per second (that would be ~5.4 × 50, a meaningless figure since the
+bot never consumes actions that fast). Two rates are deliberately
+decoupled: `ControlLoop` (01.1) pops one action per **tick** (the ~5Hz-class
+actuation rate) and only fires a fresh `infer_action` when the queue drains
+below its [low-water
+threshold](../control-loop/CONTEXT.md#term-low-water-threshold) (~25
+actions, half a chunk). So today the *environmental-re-evaluation cadence* —
+how often a new camera frame is analyzed and the plan refreshed — is bounded
+by that queue policy (~every ~5s at a 25-action threshold and 5Hz ticks),
+NOT by inference speed. The ~186ms latency means inference is no longer the
+constraint on that cadence: re-evaluating every camera frame more eagerly
+(a higher low-water threshold, or re-inferring every N ticks) is affordable
+up to a ceiling of ~5.4 fresh evaluations/sec (~5.4Hz) before inference
+itself becomes the bottleneck — a control-loop policy choice
+([control-loop](../control-loop/design.md)), not a model-runtime limit.
 The freshly-measured Python median (~321ms) confirms the ~327–331ms figure
 this table previously carried was real, not stale.
 
