@@ -9,10 +9,11 @@
 #
 # Env knobs:
 #   BENCH_RUNS=N        number of timed runs (default 7)
-#   BENCH_FUSE=1        enable Emily.Compiler fuse: true globally
+#   BENCH_FUSE=0        disable Emily.Compiler fuse: true (on by default,
+#                       matching the shipped inference-path config)
 
 runs = String.to_integer(System.get_env("BENCH_RUNS", "7"))
-fuse = System.get_env("BENCH_FUSE") == "1"
+fuse = System.get_env("BENCH_FUSE") != "0"
 
 Nx.global_default_backend({Emily.Backend, device: :gpu})
 
