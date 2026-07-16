@@ -206,6 +206,263 @@ defmodule SmolVLA.Expert do
   end
 
   # ------------------------------------------------------------------
+  # Prefill / step split (inference KV cache).
+  #
+  # The attention mask guarantees the backbone branch never attends the
+  # suffix, so across all N Euler steps the backbone's entire 16-layer
+  # trajectory is IDENTICAL -- and so, per layer, are the exact key/value
+  # tensors the suffix attends: the RoPE'd backbone k/v (`bk`/`bv`) on
+  # self-attn layers, and the expert-reprojected `ek`/`ev` (which derive
+  # only from `bk`/`bv`) on cross-attn layers. `prefill` runs the
+  # backbone once and caches those per-layer k/v tensors plus the two
+  # precomputed additive masks the step pass needs; `step` (run once per
+  # Euler step) advances ONLY the expert branch, its suffix queries
+  # attending the cached keys. This mirrors lerobot's `fill_kv_cache`.
+  #
+  # Numerically identical to the joint `forward/6`: on a self-attn layer
+  # the backbone-only attention over the prefix mask equals the joint
+  # attention sliced to the backbone rows (the expert-key logits are
+  # -inf, contributing exactly zero to both the softmax numerator and its
+  # normalizer), and the expert-branch math is the same ops in the same
+  # order -- only the backbone k/v it concatenates are now read from the
+  # cache instead of recomputed.
+  # ------------------------------------------------------------------
+
+  @doc """
+  Prefill pass: run the frozen prefix (backbone) through all
+  `num_vlm_layers` layers once, returning the per-layer key/value cache
+  the suffix will attend plus the precomputed step masks.
+
+  Returns `{cache, self_mask, cross_mask}`:
+    * `cache` -- a tuple of `{k, v}` tuples, one per layer (self-attn
+      layers cache the RoPE'd backbone k/v; cross-attn layers cache the
+      expert-reprojected k/v); a tuple, not a list, so it threads through
+      the defn boundary as an `Nx.Container`;
+    * `self_mask` -- `{1, 1, expert_len, backbone_len + expert_len}`, the
+      additive mask for a self-attn step (expert rows attending all keys);
+    * `cross_mask` -- `{1, 1, expert_len, backbone_len}`, the additive
+      mask for a cross-attn step (expert rows attending prefix keys only).
+
+  `expert_len` is fixed across steps, so both masks are step-invariant.
+  """
+  @spec prefill(map(), Config.t(), Nx.Tensor.t(), non_neg_integer(), Nx.Tensor.t(), Nx.Tensor.t()) ::
+          {tuple(), Nx.Tensor.t(), Nx.Tensor.t()}
+  deftransform prefill(
+                 weights,
+                 %Config{} = config,
+                 backbone_embeds,
+                 expert_len,
+                 pad_mask,
+                 att_mask
+               )
+               when is_integer(expert_len) do
+    prefill_traced(weights, backbone_embeds, pad_mask, att_mask,
+      config: config,
+      expert_len: expert_len
+    )
+  end
+
+  defn prefill_traced(weights, backbone_embeds, pad_mask, att_mask, opts \\ []) do
+    prefill_stack(weights, backbone_embeds, pad_mask, att_mask, opts[:config], opts[:expert_len])
+  end
+
+  deftransformp prefill_stack(weights, backbone_embeds, pad_mask, att_mask, config, expert_len) do
+    backbone_len = elem(Nx.shape(backbone_embeds), 1)
+    mask_bool = make_att_2d_masks(pad_mask, att_mask)
+    activation_dtype = Nx.type(backbone_embeds)
+    mask = additive_mask(mask_bool, activation_dtype)
+
+    # The expert query rows [backbone_len, backbone_len+expert_len).
+    self_mask = Nx.slice_along_axis(mask, backbone_len, expert_len, axis: 2)
+    cross_mask = Nx.slice_along_axis(self_mask, 0, backbone_len, axis: 3)
+
+    num_heads = config.text.num_attention_heads
+    num_kv_heads = config.text.num_key_value_heads
+    head_dim = div(config.text.hidden_size, num_heads)
+    rope_theta = config.text.rope_theta
+    eps = config.text.rms_norm_eps
+    prefix_mask = Nx.slice_along_axis(mask, 0, backbone_len, axis: 2)
+    prefix_mask = Nx.slice_along_axis(prefix_mask, 0, backbone_len, axis: 3)
+
+    num_layers = config.num_vlm_layers
+    n = config.self_attn_every_n_layers
+
+    {_backbone_hidden, cache_rev} =
+      Enum.reduce(0..(num_layers - 1), {backbone_embeds, []}, fn layer_idx, {b, cache} ->
+        is_self_attn_layer = n <= 0 or rem(layer_idx, n) == 0
+        backbone_prefix = "expert_stack.layers.#{layer_idx}.backbone."
+        expert_prefix = "expert_stack.layers.#{layer_idx}.expert."
+
+        {bq, bk, bv} =
+          project_qkv(weights, backbone_prefix, b, num_heads, num_kv_heads, head_dim,
+            rope_theta: rope_theta,
+            eps: eps,
+            offset: 0
+          )
+
+        scale = 1.0 / :math.sqrt(head_dim)
+
+        backbone_att =
+          Emily.Fast.scaled_dot_product_attention_with_mask(bq, bk, bv, prefix_mask, scale: scale)
+
+        backbone_out =
+          merge_heads(backbone_att)
+          |> linear_no_bias(weights[backbone_prefix <> "self_attn.o_proj.weight"])
+
+        b_next = mlp_residual(weights, backbone_prefix, b, backbone_out, eps)
+
+        # The (k, v) the suffix attends on THIS layer:
+        #   self-attn -> the RoPE'd backbone k/v directly;
+        #   cross-attn -> the expert's re-projection of the backbone k/v.
+        kv =
+          if is_self_attn_layer do
+            {bk, bv}
+          else
+            bk_flat = merge_heads_kv(bk)
+            bv_flat = merge_heads_kv(bv)
+
+            ek =
+              bk_flat
+              |> linear_no_bias(weights[expert_prefix <> "self_attn.k_proj.weight"])
+              |> split_heads(num_kv_heads, head_dim)
+
+            ev =
+              bv_flat
+              |> linear_no_bias(weights[expert_prefix <> "self_attn.v_proj.weight"])
+              |> split_heads(num_kv_heads, head_dim)
+
+            {ek, ev}
+          end
+
+        {b_next, [kv | cache]}
+      end)
+
+    # The cache is returned as a TUPLE of `{k, v}` tuples (not a list):
+    # `Nx.Container` is implemented for tuples but NOT for lists, so a
+    # list passed back through a defn boundary would not be traversed as
+    # a container -- its tensor leaves would not be recognized as jit
+    # inputs. A fixed-size tuple (16 layers, compile-time known) threads
+    # each cached tensor through correctly.
+    cache = cache_rev |> Enum.reverse() |> List.to_tuple()
+    {cache, self_mask, cross_mask}
+  end
+
+  @doc """
+  Step pass: advance ONLY the expert (suffix) branch through all
+  `num_vlm_layers` layers, its queries attending the prefilled backbone
+  key/value cache. Returns `expert_out` (final expert RMSNorm applied),
+  ready for the action projection.
+
+  `cache`, `self_mask`, `cross_mask` come from `prefill/6`;
+  `backbone_len` is the prefix length the self-attn RoPE offset uses.
+  """
+  @spec step(
+          map(),
+          Config.t(),
+          tuple(),
+          Nx.Tensor.t(),
+          Nx.Tensor.t(),
+          Nx.Tensor.t(),
+          non_neg_integer()
+        ) ::
+          Nx.Tensor.t()
+  deftransform step(
+                 weights,
+                 %Config{} = config,
+                 cache,
+                 expert_embeds,
+                 self_mask,
+                 cross_mask,
+                 backbone_len
+               )
+               when is_integer(backbone_len) do
+    step_traced(weights, cache, expert_embeds, self_mask, cross_mask,
+      config: config,
+      backbone_len: backbone_len
+    )
+  end
+
+  defn step_traced(weights, cache, expert_embeds, self_mask, cross_mask, opts \\ []) do
+    step_stack(
+      weights,
+      cache,
+      expert_embeds,
+      self_mask,
+      cross_mask,
+      opts[:config],
+      opts[:backbone_len]
+    )
+  end
+
+  deftransformp step_stack(
+                  weights,
+                  cache,
+                  expert_embeds,
+                  self_mask,
+                  cross_mask,
+                  config,
+                  backbone_len
+                ) do
+    num_heads = config.text.num_attention_heads
+    num_kv_heads = config.text.num_key_value_heads
+    head_dim = div(config.text.hidden_size, num_heads)
+    rope_theta = config.text.rope_theta
+    eps = config.text.rms_norm_eps
+    scale = 1.0 / :math.sqrt(head_dim)
+
+    num_layers = config.num_vlm_layers
+    n = config.self_attn_every_n_layers
+
+    expert_hidden =
+      Enum.reduce(0..(num_layers - 1), expert_embeds, fn layer_idx, e ->
+        is_self_attn_layer = n <= 0 or rem(layer_idx, n) == 0
+        expert_prefix = "expert_stack.layers.#{layer_idx}.expert."
+        {ck, cv} = elem(cache, layer_idx)
+
+        expert_att =
+          if is_self_attn_layer do
+            # Expert projects its OWN q/k/v (offset = backbone_len), then
+            # attends the cached backbone k/v CONCATENATED with its own.
+            {eq, ek, ev} =
+              project_qkv(weights, expert_prefix, e, num_heads, num_kv_heads, head_dim,
+                rope_theta: rope_theta,
+                eps: eps,
+                offset: backbone_len
+              )
+
+            k = Nx.concatenate([ck, ek], axis: 2)
+            v = Nx.concatenate([cv, ev], axis: 2)
+            Emily.Fast.scaled_dot_product_attention_with_mask(eq, k, v, self_mask, scale: scale)
+          else
+            # Cross-attn: expert query (offset 0) attends the cached
+            # expert-reprojected backbone k/v only.
+            normed_expert =
+              fused_rms_norm(e, weights[expert_prefix <> "input_layernorm.weight"], eps: eps)
+
+            eq =
+              normed_expert
+              |> linear_no_bias(weights[expert_prefix <> "self_attn.q_proj.weight"])
+              |> split_heads(num_heads, head_dim)
+              |> then(&Emily.Fast.rope(&1, Nx.tensor(0), dims: head_dim, base: rope_theta))
+
+            Emily.Fast.scaled_dot_product_attention_with_mask(eq, ck, cv, cross_mask,
+              scale: scale
+            )
+          end
+
+        expert_out =
+          merge_heads(expert_att)
+          |> linear_no_bias(weights[expert_prefix <> "self_attn.o_proj.weight"])
+
+        mlp_residual(weights, expert_prefix, e, expert_out, eps)
+      end)
+
+    fused_rms_norm(expert_hidden, weights["expert_stack.expert_norm.weight"],
+      eps: config.text.rms_norm_eps
+    )
+  end
+
+  # ------------------------------------------------------------------
   # One aligned (backbone-layer, expert-layer) pair.
   # ------------------------------------------------------------------
 

@@ -435,26 +435,40 @@ defmodule SmolVLA do
     num_steps = config.num_steps
     dt = -1.0 / num_steps
 
+    backbone_len = Nx.axis_size(prefix_embeds, 1)
+    expert_len = config.chunk_size
+
+    # The backbone branch never attends the suffix, so its 16-layer
+    # trajectory -- and the per-layer key/value tensors the suffix reads
+    # -- are identical across every Euler step. Prefill them ONCE. The
+    # suffix's own per-token masks are all-ones and step-invariant, so
+    # the concatenated mask (and thus prefill's step masks) is built once
+    # here from a fixed all-ones suffix mask rather than per step.
+    {suffix_pad_mask, suffix_att_mask} = suffix_masks(1, expert_len)
+    pad_mask = Nx.concatenate([prefix_pad_mask, suffix_pad_mask], axis: 1)
+    att_mask = Nx.concatenate([prefix_att_mask, suffix_att_mask], axis: 1)
+
+    {cache, self_mask, cross_mask} =
+      Expert.prefill(weights, config, prefix_embeds, expert_len, pad_mask, att_mask)
+
     Enum.reduce(0..(num_steps - 1), noise, fn step, x_t ->
       t = 1.0 + step * dt
       timestep = Nx.broadcast(t, {1}) |> Nx.as_type(:f32) |> Nx.backend_transfer(Emily.Backend)
 
       x_t_bf16 = Nx.as_type(x_t, :bf16)
 
-      {suffix_embeds, suffix_pad_mask, suffix_att_mask} =
+      {suffix_embeds, _suffix_pad_mask, _suffix_att_mask} =
         embed_suffix(weights, config, x_t_bf16, timestep)
 
-      pad_mask = Nx.concatenate([prefix_pad_mask, suffix_pad_mask], axis: 1)
-      att_mask = Nx.concatenate([prefix_att_mask, suffix_att_mask], axis: 1)
-
-      {_backbone_out, expert_out} =
-        Expert.forward(
+      expert_out =
+        Expert.step(
           weights,
           config,
-          prefix_embeds,
+          cache,
           suffix_embeds,
-          pad_mask,
-          att_mask
+          self_mask,
+          cross_mask,
+          backbone_len
         )
 
       v_t =
@@ -463,6 +477,16 @@ defmodule SmolVLA do
 
       Nx.add(x_t, Nx.multiply(dt, v_t))
     end)
+  end
+
+  # The suffix's own per-token pad/att masks: all-ones (every suffix
+  # token is real and starts its own causal block), matching
+  # `embed_suffix/4`'s own construction exactly -- extracted here so the
+  # prefill mask can be built once outside the Euler loop.
+  defp suffix_masks(batch, chunk_size) do
+    pad_mask = Nx.broadcast(1, {batch, chunk_size}) |> Nx.as_type(:u8) |> Nx.not_equal(0)
+    att_mask = Nx.broadcast(1, {batch, chunk_size}) |> Nx.as_type(:s32)
+    {pad_mask, att_mask}
   end
 
   # ------------------------------------------------------------------
