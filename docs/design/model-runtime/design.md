@@ -131,14 +131,6 @@ The full run configuration and numbers are recorded in
 `finetune_job/parity_gate/parity_gate_report.json`.
 :::
 
-:::pending {kind=build since=2026-07-16}
-The `InferenceServer` (component 01.5) — the named GenServer wrapping the
-emily-native adapter (01.2) so it answers `infer_action` in-process or across a
-BEAM cluster — is designed, not built. First remote caller is the
-[demo](../demo/design.md) context's [sim node](../demo/CONTEXT.md#term-sim-node).
-See
-[ADR-0010](../../adr/0010-beam-distribution-orthogonal-to-infer-action-port.md#adr-0010).
-:::
 
 ## 01 Components
 

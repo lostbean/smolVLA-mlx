@@ -1025,8 +1025,6 @@ footer.colophon {
 <dd><span class="enf convention">convention</span> <span>strong → weak</span></dd>
 <dt>Chips</dt>
 <dd><span class="entry-id">P1</span> <span>script that decides · citable id</span></dd>
-<dt>Pending</dt>
-<dd><span class="badge build">build</span> <span class="since">since YYYY-MM-DD</span></dd>
 </dl>
 </details>
 
@@ -1181,20 +1179,6 @@ shape across the port.</p>
 <p>No Elixir-specific or bb-bot-specific concern leaks into the mlx-vlm fork;
 it is designed to be a mergeable PR on its own terms.</p>
 </div>
-</div>
-</div>
-</div>
-<h2 id="pending-updates">Pending updates</h2>
-<div class="pending">
-<div class="entry"><div class="entry-head"><span class="badges"><span class="badge build">build</span> <span class="since">since 2026-07-16</span></span></div>
-<div class="body">
-<p>The <a href="demo/design.html">demo</a> context — a simulated SO-101 arm driven as a closed
-loop by the production control loop on a sim node, clustered to a Mac
-<a href="model-runtime/design.html">InferenceServer</a> over BEAM distribution — is designed
-but not built. It depends on <code>ControlLoop</code>/<code>ActionQueue</code> (built) gaining an
-observation-source seam and on the <code>InferenceServer</code> being built. See
-<a href="../adr/0011-demo-is-a-simulated-closed-loop.md#adr-0011">ADR-0011</a> and
-<a href="../adr/0012-sim-env-bridged-via-python-sim-server-over-zeromq.md#adr-0012">ADR-0012</a>.</p>
 </div>
 </div>
 </div>

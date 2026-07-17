@@ -92,21 +92,6 @@ exposes the production adapter over the cluster. The demo adds wiring, never new
 mechanism.
 :::
 
-## Pending updates
-
-:::pending {kind=build since=2026-07-16}
-The entire demo context is designed, not built: the
-[sim env adapter](CONTEXT.md#term-sim-env-adapter) (01.1) and the
-[sim node](CONTEXT.md#term-sim-node) two-node cluster wiring (01.2), plus the
-Python [sim server](CONTEXT.md#term-sim-server) it drives. Depends on
-[control-loop](../control-loop/design.md)'s `ControlLoop`/`ActionQueue` (built)
-gaining an [observation source](../control-loop/CONTEXT.md#term-observation-source)
-seam, and on [model-runtime](../model-runtime/design.md)'s inference server
-(01.5). See
-[ADR-0011](../../adr/0011-demo-is-a-simulated-closed-loop.md#adr-0011) and
-[ADR-0012](../../adr/0012-sim-env-bridged-via-python-sim-server-over-zeromq.md#adr-0012).
-:::
-
 ## 01 System at a glance
 
 **Two BEAM nodes, one cluster, one simulation.** The sim node runs the whole

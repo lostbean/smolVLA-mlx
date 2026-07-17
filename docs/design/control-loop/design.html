@@ -1025,8 +1025,6 @@ footer.colophon {
 <dd><span class="enf convention">convention</span> <span>strong → weak</span></dd>
 <dt>Chips</dt>
 <dd><span class="entry-id">P1</span> <span>script that decides · citable id</span></dd>
-<dt>Pending</dt>
-<dd><span class="badge build">build</span> <span class="since">since YYYY-MM-DD</span></dd>
 </dl>
 </details>
 
@@ -1101,20 +1099,6 @@ through <code>ControlLoop</code> — no other process reaches in and no history 
 &quot;what was queued before this tick?&quot; is always answerable from the GenServer's
 own state.</p>
 </div>
-</div>
-</div>
-</div>
-<h2 id="pending-updates">Pending updates</h2>
-<div class="pending">
-<div class="entry"><div class="entry-head"><span class="badges"><span class="badge build">build</span> <span class="since">since 2026-07-16</span></span></div>
-<div class="body">
-<p>The <a href="CONTEXT.md#term-observation-source">observation source</a> injection seam on
-<code>ControlLoop</code> (component 01.1) — a <code>(-&gt; observation)</code> function the loop calls
-when firing <code>infer_action</code>, symmetric with the existing actuator sink,
-defaulting to today's fixed placeholder — is designed, not yet built. The
-<a href="../demo/design.html">demo</a>'s
-<a href="../demo/CONTEXT.md#term-sim-env-adapter">sim env adapter</a> is its first customer.
-See <a href="../../adr/0011-demo-is-a-simulated-closed-loop.md#adr-0011">ADR-0011</a>.</p>
 </div>
 </div>
 </div>

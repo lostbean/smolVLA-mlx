@@ -150,18 +150,6 @@ No Elixir-specific or bb-bot-specific concern leaks into the mlx-vlm fork;
 it is designed to be a mergeable PR on its own terms.
 :::
 
-## Pending updates
-
-:::pending {kind=build since=2026-07-16}
-The [demo](demo/design.md) context — a simulated SO-101 arm driven as a closed
-loop by the production control loop on a sim node, clustered to a Mac
-[InferenceServer](model-runtime/design.md) over BEAM distribution — is designed
-but not built. It depends on `ControlLoop`/`ActionQueue` (built) gaining an
-observation-source seam and on the `InferenceServer` being built. See
-[ADR-0011](../adr/0011-demo-is-a-simulated-closed-loop.md#adr-0011) and
-[ADR-0012](../adr/0012-sim-env-bridged-via-python-sim-server-over-zeromq.md#adr-0012).
-:::
-
 ## 01 System at a glance
 
 ```mermaid

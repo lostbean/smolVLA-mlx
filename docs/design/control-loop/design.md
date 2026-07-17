@@ -68,18 +68,6 @@ through `ControlLoop` — no other process reaches in and no history is lost:
 own state.
 :::
 
-## Pending updates
-
-:::pending {kind=build since=2026-07-16}
-The [observation source](CONTEXT.md#term-observation-source) injection seam on
-`ControlLoop` (component 01.1) — a `(-> observation)` function the loop calls
-when firing `infer_action`, symmetric with the existing actuator sink,
-defaulting to today's fixed placeholder — is designed, not yet built. The
-[demo](../demo/design.md)'s
-[sim env adapter](../demo/CONTEXT.md#term-sim-env-adapter) is its first customer.
-See [ADR-0011](../../adr/0011-demo-is-a-simulated-closed-loop.md#adr-0011).
-:::
-
 ## 01 Components
 
 :::cards {cols=2}
