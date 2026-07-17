@@ -6,6 +6,16 @@ Usage:
     uv run python -m sim_server
     uv run python -m sim_server --env-id MuJoCoPickAndPlace-v1 --address tcp://*:5556
 
+To WATCH the arm move in a live 3D window, add ``--viewer`` (off by default,
+presentation only). On macOS this must launch under ``mjpython`` (the
+main-thread launcher MuJoCo requires); on Linux plain ``python`` works::
+
+    uv run mjpython -m sim_server --viewer
+
+In viewer mode the ZeroMQ serve loop runs on a background thread and the window
+holds the main thread; closing the window shuts the server down cleanly. The
+headless default is unchanged. See ADR-0013 and ``sim_server.viewer``.
+
 The env id can also be set via the SIM_ENV_ID environment variable, and the
 bind address via SIM_SERVER_ADDRESS -- CLI flags take precedence over either.
 Address defaults to tcp://*:5556 (all interfaces, reachable over LAN, not just
@@ -62,6 +72,18 @@ def _parse_args(argv):
         default="INFO",
         help="Python logging level (default: INFO).",
     )
+    parser.add_argument(
+        "--viewer",
+        action="store_true",
+        default=False,
+        help=(
+            "Open a live MuJoCo 3D window onto the running sim (off by "
+            "default). Presentation only -- serves ZeroMQ on a background "
+            "thread and holds the main thread for the window. On macOS launch "
+            "under mjpython: `uv run mjpython -m sim_server --viewer`. Closing "
+            "the window shuts the server down. See ADR-0013."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -83,7 +105,15 @@ def main(argv=None) -> int:
 
     server = SimServer(env, address=args.address)
     try:
-        server.serve_forever()
+        if args.viewer:
+            # Viewer mode: serve on a background thread; the live MuJoCo window
+            # holds the main thread. Deferred import so the default (headless)
+            # path never pulls in mujoco.viewer. See ADR-0013.
+            from sim_server.viewer import run_with_viewer
+
+            run_with_viewer(server, env)
+        else:
+            server.serve_forever()
     except KeyboardInterrupt:
         logger.info("interrupted, shutting down")
         server.stop()

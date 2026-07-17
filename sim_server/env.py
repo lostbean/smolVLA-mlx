@@ -107,6 +107,19 @@ class SimEnv:
         image = self._render_frame()
         return self._image_fields(image)
 
+    def mujoco_model_data(self):
+        """Return ``(model, data)`` -- the env's actual MuJoCo ``MjModel`` and
+        ``MjData`` instances, the exact objects ``reset``/``step`` advance.
+
+        Read-only accessor for the optional live viewer (see
+        ``sim_server.viewer``): ``mujoco.viewer.launch_passive(model, data)``
+        attaches a passive 3D window to *these* objects, so the window shows
+        precisely what the serve loop drives -- not a copy. Nothing here mutates
+        the sim; the viewer reads it and never drives it (ADR-0013).
+        """
+        unwrapped = self._env.unwrapped
+        return unwrapped.model, unwrapped.data
+
     def close(self) -> None:
         if not self._closed:
             self._env.close()

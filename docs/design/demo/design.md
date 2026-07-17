@@ -92,17 +92,6 @@ exposes the production adapter over the cluster. The demo adds wiring, never new
 mechanism.
 :::
 
-## Pending updates
-
-:::pending {kind=build since=2026-07-17}
-The [sim viewer](CONTEXT.md#term-sim-viewer) — an optional live 3D MuJoCo window
-on the [sim server](CONTEXT.md#term-sim-server), off by default, showing the arm
-move under real inference — is designed, not yet built. Presentation only: it
-reads the running env, adds no model or queue logic, and leaves the sim wire
-contract, `SimEnvAdapter`, and `ControlLoop` untouched. See
-[ADR-0013](../../adr/0013-live-mujoco-viewer-mode-on-the-sim-server.md#adr-0013).
-:::
-
 ## 01 System at a glance
 
 **Two BEAM nodes, one cluster, one simulation.** The sim node runs the whole
