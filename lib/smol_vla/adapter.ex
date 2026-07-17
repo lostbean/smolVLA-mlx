@@ -35,6 +35,13 @@ defmodule SmolVLA.Adapter do
 
   alias ControlLoop.ZeroMQClient
 
+  # The emily-native adapter is the production implementation of the
+  # `InferenceServer` adapter seam (component 01.5) -- declaring the
+  # behaviour makes that conformance explicit and compiler-checked. It
+  # does NOT make this a second adapter (ADR-0010): the seam only names
+  # the contract InferenceServer already delegated to.
+  @behaviour InferenceServer.Adapter
+
   @type observation :: ZeroMQClient.observation()
   @type action_chunk :: ZeroMQClient.action_chunk()
 
@@ -45,6 +52,7 @@ defmodule SmolVLA.Adapter do
   own shape exactly, so `ControlLoop` does not need to know which
   adapter is active.
   """
+  @impl InferenceServer.Adapter
   @spec infer_action(SmolVLA.t(), observation()) :: {:ok, action_chunk()} | {:error, term()}
   def infer_action(%SmolVLA{} = model, %{
         image: image_binary,

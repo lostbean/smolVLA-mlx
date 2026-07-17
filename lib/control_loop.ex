@@ -51,6 +51,7 @@ defmodule ControlLoop do
           | {:adapter_client, term()}
           | {:initial_queue, ActionQueue.t()}
           | {:low_water_threshold, pos_integer()}
+          | {:observation_source, (-> term())}
           | {:actuator_sink, (term() -> any())}
           | {:telemetry_sink, (term() -> any())}
           | GenServer.option()
@@ -80,6 +81,14 @@ defmodule ControlLoop do
       one synchronous `infer_action` call before the first tick, since an
       empty starting queue with `depth 0 < threshold` will fire an async
       call on tick 1 and have nothing to send that same tick);
+    * `observation_source` -- `(-> observation)`, the input seam symmetric
+      with `actuator_sink`: a zero-arity function `ControlLoop` calls to
+      obtain the current observation each time it fires an `infer_action`
+      call (once per triggered call, not per tick), per this context's
+      "observation source" term. Keeps the loop agnostic to where
+      observations come from (default: a fixed placeholder observation --
+      the sensor/dataset/sim-env source is out of scope here, per the "not
+      robot control logic" no-goal);
     * `actuator_sink` -- `(action -> any())`, called once per tick with the
       popped action (default: a debug log, per the "not robot control
       logic" no-goal -- this is a stub seam, not real actuator wiring);
@@ -146,6 +155,7 @@ defmodule ControlLoop do
     :adapter_module,
     :adapter_client,
     :low_water_threshold,
+    :observation_source,
     :actuator_sink,
     :telemetry_sink,
     :infer_action_in_flight
@@ -158,6 +168,7 @@ defmodule ControlLoop do
       adapter_module: Keyword.fetch!(opts, :adapter_module),
       adapter_client: Keyword.fetch!(opts, :adapter_client),
       low_water_threshold: Keyword.get(opts, :low_water_threshold, @default_low_water_threshold),
+      observation_source: Keyword.get(opts, :observation_source, &build_observation/0),
       actuator_sink: Keyword.get(opts, :actuator_sink, &default_actuator_sink/1),
       telemetry_sink: Keyword.get(opts, :telemetry_sink, &default_telemetry_sink/1),
       infer_action_in_flight: false
@@ -230,7 +241,7 @@ defmodule ControlLoop do
     server = self()
     adapter_module = state.adapter_module
     adapter_client = state.adapter_client
-    observation = build_observation()
+    observation = state.observation_source.()
 
     {:ok, _pid} =
       Task.start(fn ->
@@ -249,11 +260,12 @@ defmodule ControlLoop do
     %{state | infer_action_in_flight: true}
   end
 
-  # This chunk's job is the queue/timing/adapter-dispatch seam, not
-  # observation sourcing (that is the bb bot's actual camera/proprioception
-  # wiring, out of scope per the "not robot control logic" no-goal) -- a
-  # fixed placeholder observation stands in until a real sensor source is
-  # wired up in a later chunk.
+  # The default `observation_source`: a fixed placeholder observation. Real
+  # observation sourcing (the bb bot's camera/proprioception, a recorded
+  # dataset, or the demo's sim env adapter) is an injected out-of-scope
+  # provider per the "not robot control logic" no-goal and the "observation
+  # source" term -- a caller supplies one via `observation_source:`; this
+  # stands in when none is given.
   defp build_observation do
     %{
       image: :binary.copy(<<0>>, 224 * 224 * 3),

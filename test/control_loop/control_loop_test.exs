@@ -12,6 +12,7 @@ defmodule ControlLoop.ControlLoopTest do
       Agent.start_link(fn ->
         %{
           calls: 0,
+          observations: [],
           behavior: Keyword.get(opts, :behavior, fn -> {:ok, default_chunk()} end)
         }
       end)
@@ -19,10 +20,11 @@ defmodule ControlLoop.ControlLoopTest do
 
     def default_chunk, do: for(i <- 1..50, do: [i * 1.0])
 
-    def infer_action(agent, _observation) do
+    def infer_action(agent, observation) do
       behavior =
         Agent.get_and_update(agent, fn state ->
-          {state.behavior, %{state | calls: state.calls + 1}}
+          {state.behavior,
+           %{state | calls: state.calls + 1, observations: [observation | state.observations]}}
         end)
 
       # `behavior.()` runs outside the Agent's own process so a test
@@ -34,6 +36,9 @@ defmodule ControlLoop.ControlLoopTest do
     end
 
     def call_count(agent), do: Agent.get(agent, & &1.calls)
+
+    # observations the adapter received, oldest first
+    def observations(agent), do: Agent.get(agent, &Enum.reverse(&1.observations))
 
     def set_behavior(agent, fun) do
       Agent.update(agent, &%{&1 | behavior: fun})
@@ -168,6 +173,113 @@ defmodule ControlLoop.ControlLoopTest do
 
       Process.sleep(150)
       assert FakeAdapter.call_count(adapter) == 1
+    end
+  end
+
+  describe "observation_source injection -- the input seam symmetric with actuator_sink" do
+    test "the observation passed to infer_action comes from the injected source" do
+      {:ok, adapter} = FakeAdapter.start_link()
+
+      distinctive = %{
+        image: <<7, 7, 7>>,
+        image_shape: {1, 1, 3},
+        state: [1.5, 2.5, 3.5, 4.5, 5.5, 6.5],
+        instruction: "pick up the distinctive red block"
+      }
+
+      {:ok, pid} =
+        ControlLoop.start_link(
+          adapter: :zeromq_fallback,
+          adapter_module: FakeAdapter,
+          adapter_client: adapter,
+          initial_queue: seed_queue(10),
+          low_water_threshold: 25,
+          observation_source: fn -> distinctive end,
+          actuator_sink: fn _action -> :ok end
+        )
+
+      :ok = ControlLoop.tick(pid)
+
+      # the queue_low tick fires exactly one async infer_action; the adapter
+      # must receive precisely the observation the injected source returned.
+      Process.sleep(20)
+      assert FakeAdapter.observations(adapter) == [distinctive]
+    end
+
+    test "omitting observation_source uses the fixed placeholder observation (byte-for-byte default)" do
+      {:ok, adapter} = FakeAdapter.start_link()
+
+      {:ok, pid} =
+        ControlLoop.start_link(
+          adapter: :zeromq_fallback,
+          adapter_module: FakeAdapter,
+          adapter_client: adapter,
+          initial_queue: seed_queue(10),
+          low_water_threshold: 25,
+          actuator_sink: fn _action -> :ok end
+        )
+
+      :ok = ControlLoop.tick(pid)
+      Process.sleep(20)
+
+      assert FakeAdapter.observations(adapter) == [
+               %{
+                 image: :binary.copy(<<0>>, 224 * 224 * 3),
+                 image_shape: {224, 224, 3},
+                 state: List.duplicate(0.0, 6),
+                 instruction: "placeholder instruction"
+               }
+             ]
+    end
+
+    test "the source is called once per triggered infer_action, not on every tick" do
+      # count invocations of the injected source
+      counter = :counters.new(1, [])
+      test_pid = self()
+
+      obs = fn ->
+        :counters.add(counter, 1, 1)
+
+        %{
+          image: <<0>>,
+          image_shape: {1, 1, 1},
+          state: [0.0],
+          instruction: "counted"
+        }
+      end
+
+      # a slow adapter keeps the first infer_action in flight across the
+      # extra ticks, so the in-flight guard suppresses further calls -- and
+      # therefore further observation_source invocations.
+      {:ok, adapter} =
+        FakeAdapter.start_link(
+          behavior: fn ->
+            send(test_pid, :infer_action_called)
+            Process.sleep(200)
+            {:ok, FakeAdapter.default_chunk()}
+          end
+        )
+
+      {:ok, pid} =
+        ControlLoop.start_link(
+          adapter: :zeromq_fallback,
+          adapter_module: FakeAdapter,
+          adapter_client: adapter,
+          initial_queue: seed_queue(10),
+          low_water_threshold: 25,
+          observation_source: obs,
+          actuator_sink: fn _action -> :ok end
+        )
+
+      :ok = ControlLoop.tick(pid)
+      assert_receive :infer_action_called
+
+      # more ticks while the single infer_action is still in flight: no
+      # second call fires, so the source is not invoked again.
+      for _ <- 1..5, do: :ok = ControlLoop.tick(pid)
+      Process.sleep(50)
+
+      assert :counters.get(counter, 1) == 1
     end
   end
 

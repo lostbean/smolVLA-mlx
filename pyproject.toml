@@ -9,6 +9,7 @@ dependencies = [
     "msgpack>=1.2.1",
     "num2words>=0.5.14",
     "pyzmq>=27.1.0",
+    "so101-nexus>=0.4.8",
 ]
 
 [tool.uv.workspace]
