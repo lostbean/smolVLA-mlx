@@ -153,3 +153,58 @@ def test_run_with_viewer_wires_real_model_data_and_shuts_down_cleanly(monkeypatc
     assert handle.sync_count >= 1
     # Window close -> clean shutdown (criterion 5).
     assert server._stop_requested is True
+
+
+def test_concurrent_step_and_sync_do_not_race_on_mjdata():
+    """Regression for the "mj_copyDataVisual: stack is in use" crash.
+
+    In viewer mode the serve thread mutates MjData (step) while the viewer
+    reads it (sync) from another thread. MjData is not thread-safe, so without
+    a shared lock a real sync colliding with a real step aborts MuJoCo after a
+    tick or two. This drives exactly that collision -- many real steps on one
+    thread against many real ``mj_copyData`` reads (what viewer.sync() does
+    internally) on another -- both taking ``env.data_lock`` the way the server
+    and viewer do, and asserts no MuJoCo abort occurs.
+    """
+    from sim_server.env import SimEnv
+
+    env = SimEnv(seed=0)
+    try:
+        env.reset()
+        model, data = env.mujoco_model_data()
+        lock = env.data_lock
+
+        errors = []
+        stop = threading.Event()
+        neutral = [0.0] * 6
+
+        def stepper():
+            try:
+                while not stop.is_set():
+                    env.step(neutral)  # takes env.data_lock internally
+            except Exception as exc:  # pragma: no cover - the bug path
+                errors.append(("step", exc))
+
+        def syncer():
+            # A scratch MjData is the copy target; mj_copyData reads the live
+            # `data` exactly as the passive viewer's sync does. Under the lock
+            # this must never hit "stack is in use".
+            scratch = mujoco.MjData(model)
+            try:
+                for _ in range(400):
+                    with lock:
+                        mujoco.mj_copyData(scratch, model, data)
+            except Exception as exc:  # pragma: no cover - the bug path
+                errors.append(("sync", exc))
+
+        t_step = threading.Thread(target=stepper, daemon=True)
+        t_sync = threading.Thread(target=syncer, daemon=True)
+        t_step.start()
+        t_sync.start()
+        t_sync.join(timeout=60.0)
+        stop.set()
+        t_step.join(timeout=10.0)
+
+        assert not errors, f"MjData race under the lock: {errors}"
+    finally:
+        env.close()

@@ -38,6 +38,7 @@ Wire shapes (the mapping this wrapper documents)
 """
 
 import logging
+import threading
 
 import numpy as np
 
@@ -80,15 +81,33 @@ class SimEnv:
         self._seed = seed
         self._env = gym.make(env_id, render_mode="rgb_array")
         self._closed = False
+        # MuJoCo's MjData is NOT thread-safe. In viewer mode the serve loop runs
+        # on a background thread (reset/step/render mutate MjData) while the live
+        # viewer syncs MjData from the main thread -- concurrent access aborts
+        # with "mj_copyDataVisual: stack is in use". This lock serializes every
+        # MjData access; the viewer acquires the SAME lock around sync() (see
+        # data_lock / sim_server.viewer). Headless mode holds an uncontended
+        # lock -- negligible cost, single behavior for both paths.
+        self._data_lock = threading.RLock()
         logger.info("sim env %s constructed (render_mode=rgb_array)", env_id)
+
+    @property
+    def data_lock(self):
+        """The lock serializing all MjData access. Held internally by
+        reset/step/render; the live viewer must hold it around sync() so the
+        main-thread render never reads MjData mid-mutation on the serve thread.
+        """
+        return self._data_lock
 
     # ------------------------------------------------------------------
     # The three operations, each returning a plain-Python payload.
     # ------------------------------------------------------------------
     def reset(self) -> dict:
         """Start a fresh episode; return the initial observation payload."""
-        self._env.reset(seed=self._seed)
-        return self._observation_payload()
+        # Validate before taking the lock so a bad call never blocks the viewer.
+        with self._data_lock:
+            self._env.reset(seed=self._seed)
+            return self._observation_payload()
 
     def step(self, action) -> dict:
         """Advance the simulation one step with ``action`` (a length-six
@@ -99,13 +118,18 @@ class SimEnv:
         frame.
         """
         act = self._validate_action(action)
-        self._env.step(act)
-        return self._observation_payload()
+        # The lock spans the mutation AND the payload read: step advances
+        # MjData, _observation_payload reads it -- the viewer must not sync
+        # between the two, or it renders a half-updated MjData.
+        with self._data_lock:
+            self._env.step(act)
+            return self._observation_payload()
 
     def render(self) -> dict:
         """Return the current rendered frame payload WITHOUT advancing."""
-        image = self._render_frame()
-        return self._image_fields(image)
+        with self._data_lock:
+            image = self._render_frame()
+            return self._image_fields(image)
 
     def mujoco_model_data(self):
         """Return ``(model, data)`` -- the env's actual MuJoCo ``MjModel`` and

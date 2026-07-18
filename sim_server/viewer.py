@@ -56,6 +56,7 @@ def run_with_viewer(server, env) -> None:
     be called on the process main thread (MuJoCo/macOS requirement).
     """
     model, data = env.mujoco_model_data()
+    data_lock = env.data_lock
 
     serve_thread = threading.Thread(
         target=server.serve_forever, name="sim-serve", daemon=True
@@ -69,9 +70,14 @@ def run_with_viewer(server, env) -> None:
         with mujoco.viewer.launch_passive(model, data) as viewer:
             # Presentation loop: reflect the sim as the background loop drives
             # it. sync() pushes the CURRENT model/data into the window; it does
-            # not step or mutate anything.
+            # not step or mutate anything. MjData is not thread-safe, and the
+            # serve thread mutates it in reset/step/render -- so hold the env's
+            # data_lock (the SAME lock those methods take) around sync(), or the
+            # main-thread read collides with a background step and MuJoCo aborts
+            # ("mj_copyDataVisual: stack is in use").
             while viewer.is_running():
-                viewer.sync()
+                with data_lock:
+                    viewer.sync()
                 time.sleep(_SYNC_INTERVAL_S)
     finally:
         # Window closed (or the viewer raised) -> clean shutdown: stop the

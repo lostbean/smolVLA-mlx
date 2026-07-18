@@ -41,6 +41,8 @@ class FakeSimEnv:
         self.steps = []
         self.reset_count = 0
         self.render_count = 0
+        # Match SimEnv's interface: the viewer holds env.data_lock around sync().
+        self.data_lock = threading.RLock()
 
     def _frame_payload(self):
         # A frame whose content depends on the tick count, so consecutive
